@@ -74,7 +74,7 @@ const RootNavigator = () => {
   );
 };
 
-// Main App component: Wraps the RootNavigator with AuthProvider
+//  Main App component: Wraps the RootNavigator with AuthProvider
 const App = () => {
   return (
     <AuthProvider>
