@@ -13,12 +13,8 @@ import {
   Alert,
 } from 'react-native';
 import { AuthContext } from '../../context/AuthContext';
-<<<<<<< HEAD
-import { rideApi, providerApi, ocrApi } from '../../utils/api';
+import { rideApi, providerApi, riderApi, ocrApi, getFormattedAddress } from '../../utils/api';
 import * as ImagePicker from 'expo-image-picker';
-=======
-import { rideApi, providerApi, getFormattedAddress } from '../../utils/api';
->>>>>>> 1489dbed3ea3189e9278c767b5c4ca116fba2a09
 import { colors, spacing, borderRadius, typography, shadow } from '../../styles/theme';
 
 const RidesScreen = ({ navigation }) => {
@@ -128,14 +124,17 @@ const RidesScreen = ({ navigation }) => {
   const handleRideAction = (ride, action) => {
     if (userRole === 'rider') {
       if (action === 'book') {
-        Alert.alert(
-          'Book Ride',
-          `Confirm booking for ride from ${ride.startPoint} to ${ride.destination}?\nPrice: ₹${ride.rideCost}\nTime: ${new Date(ride.startTime).toLocaleString()}`,
-          [
-            { text: 'Cancel', style: 'cancel' },
-            { text: 'Book', onPress: () => bookRide(ride) }
-          ]
-        );
+        // Gate: require rider details
+        checkRiderVerifiedThen(() => {
+          Alert.alert(
+            'Book Ride',
+            `Confirm booking for ride from ${ride.startPoint} to ${ride.destination}?\nPrice: ₹${ride.rideCost}\nTime: ${new Date(ride.startTime).toLocaleString()}`,
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Book', onPress: () => bookRide(ride) }
+            ]
+          );
+        });
       }
     } else if (userRole === 'provider') {
       if (action === 'manage') {
@@ -151,14 +150,47 @@ const RidesScreen = ({ navigation }) => {
     }
   };
 
+  const checkRiderVerifiedThen = async (onOk) => {
+    try {
+      const details = await riderApi.getDetails(userToken);
+      const ok = !!(details?.aadharNumber && details?.mobileNumber);
+      if (ok) return onOk();
+      Alert.alert(
+        'Details Required',
+        'Please complete your rider details (Aadhaar and mobile) before booking.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Update Now', onPress: () => navigation.navigate('RiderDetails') }
+        ]
+      );
+    } catch (_) {
+      Alert.alert(
+        'Details Required',
+        'Please complete your rider details (Aadhaar and mobile) before booking.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Update Now', onPress: () => navigation.navigate('RiderDetails') }
+        ]
+      );
+    }
+  };
+
   const bookRide = async (ride) => {
     try {
-      // TODO: Implement actual booking logic
-      Alert.alert('Success', `Ride booked successfully! You'll receive confirmation shortly.`);
-      // Refresh rides to update availability
+      const rideId = ride._id || ride.id;
+      await rideApi.bookRide(rideId, userToken);
+      Alert.alert(
+        'Request Sent',
+        "Your request was sent to the provider. Track status in the 'Messages' tab.",
+        [
+          { text: 'OK' },
+          { text: 'Go to Messages', onPress: () => (typeof navigation?.navigate === 'function' ? navigation.navigate('Messages') : null) }
+        ]
+      );
+      // Refresh rides to update any local state if needed
       loadRides();
     } catch (error) {
-      Alert.alert('Error', 'Failed to book ride. Please try again.');
+      Alert.alert('Error', error?.message || 'Failed to send booking request. Please try again.');
     }
   };
 

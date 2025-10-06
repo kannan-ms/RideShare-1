@@ -377,7 +377,7 @@ app.get('/api/rider/details', auth, async (req, res) => {
 // @desc    Create a new ride (Provider only)
 // @access  Private (Requires Provider role)
 app.post('/api/rides/create', auth, async (req, res) => {
-    const { vehicleCategory, startPoint, destination, breakLocations, startTime, endTime, rideCost, womenOnly } = req.body;
+    const { vehicleCategory, startPoint, destination, breakLocations, startTime, endTime, rideCost, womenOnly, seats } = req.body;
     const user = await User.findById(req.user.id);
     if (!user || user.role !== 'provider') {
         return res.status(403).json({ message: 'Access denied. Only providers can create rides.' });
@@ -399,7 +399,8 @@ app.post('/api/rides/create', auth, async (req, res) => {
             startTime,
             endTime,
             rideCost,
-            womenOnly
+            womenOnly,
+            seats: Math.max(1, Math.min(6, Number(seats) || 1))
         });
         await newRide.save();
         res.status(201).json({ message: 'Ride created successfully', ride: newRide });
@@ -413,7 +414,7 @@ app.post('/api/rides/create', auth, async (req, res) => {
 // @desc    Create a new ride (Provider only)
 // @access  Private (Requires Provider role)
 app.post('/api/ride', auth, async (req, res) => {
-    const { vehicleCategory, startPoint, destination, breakLocations, startTime, endTime, rideCost, womenOnly } = req.body;
+    const { vehicleCategory, startPoint, destination, breakLocations, startTime, endTime, rideCost, womenOnly, seats } = req.body;
     const user = await User.findById(req.user.id);
     if (!user || user.role !== 'provider') {
         return res.status(403).json({ message: 'Access denied. Only providers can create rides.' });
@@ -435,7 +436,8 @@ app.post('/api/ride', auth, async (req, res) => {
             startTime: new Date(startTime),
             endTime: endTime ? new Date(endTime) : undefined,
             rideCost: parseFloat(rideCost),
-            womenOnly: womenOnly || false
+            womenOnly: womenOnly || false,
+            seats: Math.max(1, Math.min(6, Number(seats) || 1))
         });
         await newRide.save();
         res.status(201).json({ message: 'Ride created successfully', ride: newRide });
@@ -477,8 +479,8 @@ app.get('/api/rides/search', auth, async (req, res) => {
 // @access  Private (Requires Rider role)
 app.get('/api/rides', auth, async (req, res) => {
     const user = await User.findById(req.user.id);
-    if (!user || user.role !== 'rider') {
-        return res.status(403).json({ message: 'Access denied. Only riders can view available rides.' });
+    if (!user) {
+        return res.status(403).json({ message: 'Access denied.' });
     }
     try {
         const now = new Date();
@@ -498,24 +500,199 @@ app.get('/api/rides', auth, async (req, res) => {
 // @access  Private (Requires Rider role)
 app.post('/api/rides/book/:rideId', auth, async (req, res) => {
     try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'rider') {
+            return res.status(403).json({ message: 'Only riders can request to book a ride.' });
+        }
         const ride = await Ride.findById(req.params.rideId);
         if (!ride) {
             return res.status(404).json({ message: 'Ride not found.' });
         }
-        const isAlreadyRider = ride.riders.some(rider => rider.user.toString() === req.user.id);
+        const acceptedCount = ride.riders.filter(r => r.status === 'accepted').length;
+        if (ride.seats && acceptedCount >= ride.seats) {
+            return res.status(400).json({ message: 'Ride is full.' });
+        }
+        const isAlreadyRider = ride.riders.some(r => r.user.toString() === req.user.id);
         if (isAlreadyRider) {
-            return res.status(400).json({ message: 'You have already booked this ride.' });
+            return res.status(400).json({ message: 'You have already requested/joined this ride.' });
         }
         ride.riders.push({
             user: req.user.id,
-            status: 'accepted',
-            otp: '1234'
+            status: 'pending',
         });
         await ride.save();
-        res.json({ message: 'Ride booked successfully', ride });
+        res.json({ message: 'Ride request sent to provider', rideId: ride.id });
     } catch (err) {
         console.error('Ride booking error:', err.message);
         res.status(500).json({ message: 'Server error booking ride.' });
+    }
+});
+
+// --- Requests & Messaging style endpoints ---
+// Provider: list pending requests for their rides
+app.get('/api/provider/requests', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'provider') {
+            return res.status(403).json({ message: 'Only providers can view ride requests.' });
+        }
+        const rides = await Ride.find({ provider: req.user.id, 'riders.status': 'pending' })
+            .populate('riders.user', 'name mobileNumber')
+            .sort({ createdAt: -1 });
+        // Flatten to request items
+        const requests = [];
+        rides.forEach(ride => {
+            ride.riders.forEach(r => {
+                if (r.status === 'pending') {
+                    requests.push({
+                        rideId: ride.id,
+                        startPoint: ride.startPoint,
+                        destination: ride.destination,
+                        startTime: ride.startTime,
+                        rider: { id: r.user.id, name: r.user.name, mobileNumber: r.user.mobileNumber },
+                        status: r.status,
+                    });
+                }
+            });
+        });
+        res.json({ requests });
+    } catch (err) {
+        console.error('Provider requests error:', err.message);
+        res.status(500).json({ message: 'Server error fetching requests.' });
+    }
+});
+
+// Provider: accept a request
+app.post('/api/provider/requests/:rideId/:riderId/accept', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'provider') {
+            return res.status(403).json({ message: 'Only providers can accept requests.' });
+        }
+        const { rideId, riderId } = req.params;
+        const ride = await Ride.findById(rideId);
+        if (!ride) return res.status(404).json({ message: 'Ride not found.' });
+        if (ride.provider.toString() !== req.user.id) {
+            return res.status(403).json({ message: 'Not authorized for this ride.' });
+        }
+        const riderEntry = ride.riders.find(r => r.user.toString() === riderId && r.status === 'pending');
+        if (!riderEntry) return res.status(404).json({ message: 'Pending request not found.' });
+        riderEntry.status = 'accepted';
+        riderEntry.otp = '1234';
+        await ride.save();
+        res.json({ message: 'Request accepted', rideId, riderId });
+    } catch (err) {
+        console.error('Accept request error:', err.message);
+        res.status(500).json({ message: 'Server error updating request.' });
+    }
+});
+
+// Provider: reject a request
+app.post('/api/provider/requests/:rideId/:riderId/reject', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'provider') {
+            return res.status(403).json({ message: 'Only providers can reject requests.' });
+        }
+        const { rideId, riderId } = req.params;
+        const ride = await Ride.findById(rideId);
+        if (!ride) return res.status(404).json({ message: 'Ride not found.' });
+        if (ride.provider.toString() !== req.user.id) {
+            return res.status(403).json({ message: 'Not authorized for this ride.' });
+        }
+        const riderEntry = ride.riders.find(r => r.user.toString() === riderId && r.status === 'pending');
+        if (!riderEntry) return res.status(404).json({ message: 'Pending request not found.' });
+        riderEntry.status = 'rejected';
+        await ride.save();
+        res.json({ message: 'Request rejected', rideId, riderId });
+    } catch (err) {
+        console.error('Reject request error:', err.message);
+        res.status(500).json({ message: 'Server error updating request.' });
+    }
+});
+
+// Provider: notify accepted riders about additional bookings/cost sharing
+app.post('/api/provider/notify/:rideId', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'provider') {
+            return res.status(403).json({ message: 'Only providers can notify riders.' });
+        }
+        const { rideId } = req.params;
+        const { message, toAllAccepted } = req.body || {};
+        if (!message || typeof message !== 'string') {
+            return res.status(400).json({ message: 'Message is required.' });
+        }
+        const ride = await Ride.findById(rideId).populate('riders.user', 'name mobileNumber');
+        if (!ride) return res.status(404).json({ message: 'Ride not found.' });
+        if (ride.provider.toString() !== req.user.id) {
+            return res.status(403).json({ message: 'Not authorized for this ride.' });
+        }
+        const recipients = ride.riders.filter(r => r.status === 'accepted').map(r => r.user._id);
+        if (toAllAccepted && recipients.length > 0) {
+            ride.notifications.push({ message, toRiderIds: recipients });
+            await ride.save();
+        } else {
+            // If no accepted riders yet, store a general notification
+            ride.notifications.push({ message, toRiderIds: [] });
+            await ride.save();
+        }
+        res.json({ message: 'Notification sent', recipients: recipients.map(id => id.toString()) });
+    } catch (err) {
+        console.error('Notify riders error:', err.message);
+        res.status(500).json({ message: 'Server error sending notification.' });
+    }
+});
+
+// Rider: fetch notifications for rides they are part of (accepted only)
+app.get('/api/rider/notifications', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'rider') {
+            return res.status(403).json({ message: 'Only riders can view notifications.' });
+        }
+        const rides = await Ride.find({ 'riders.user': req.user.id, 'riders.status': 'accepted' });
+        const items = rides.flatMap(ride => (ride.notifications || []).filter(n => !n.toRiderIds?.length || n.toRiderIds.some(id => id.toString() === req.user.id.toString())).map(n => ({
+            rideId: ride.id,
+            message: n.message,
+            createdAt: n.createdAt,
+        })));
+        res.json({ notifications: items.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)) });
+    } catch (err) {
+        console.error('Rider notifications error:', err.message);
+        res.status(500).json({ message: 'Server error fetching notifications.' });
+    }
+});
+
+// Rider: list own requests with statuses
+app.get('/api/rider/requests', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'rider') {
+            return res.status(403).json({ message: 'Only riders can view their requests.' });
+        }
+        const rides = await Ride.find({ 'riders.user': req.user.id })
+            .populate('provider', 'name mobileNumber')
+            .sort({ createdAt: -1 });
+        const requests = [];
+        rides.forEach(ride => {
+            ride.riders.forEach(r => {
+                if (r.user.toString() === req.user.id) {
+                    requests.push({
+                        rideId: ride.id,
+                        startPoint: ride.startPoint,
+                        destination: ride.destination,
+                        startTime: ride.startTime,
+                        provider: { id: ride.provider.id, name: ride.provider.name, mobileNumber: ride.provider.mobileNumber },
+                        status: r.status,
+                    });
+                }
+            });
+        });
+        res.json({ requests });
+    } catch (err) {
+        console.error('Rider requests error:', err.message);
+        res.status(500).json({ message: 'Server error fetching rider requests.' });
     }
 });
 

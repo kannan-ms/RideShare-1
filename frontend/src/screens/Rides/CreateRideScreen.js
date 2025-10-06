@@ -18,7 +18,7 @@ import {
 import { Picker } from '@react-native-picker/picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { AuthContext } from '../../context/AuthContext';
-import { rideApi } from '../../utils/api';
+import { rideApi, providerApi } from '../../utils/api';
 import { colors, spacing, borderRadius, typography, shadow } from '../../styles/theme';
 import MapScreen from './MapScreen'; // Import the MapScreen component
 
@@ -32,6 +32,7 @@ const CreateRideScreen = ({ navigation }) => {
   const [startTime, setStartTime] = useState(new Date());
   const [endTime, setEndTime] = useState(new Date());
   const [rideCost, setRideCost] = useState('');
+  const [seats, setSeats] = useState('1');
   const [womenOnly, setWomenOnly] = useState(false);
   const [showStartTimePicker, setShowStartTimePicker] = useState(false);
   const [showEndTimePicker, setShowEndTimePicker] = useState(false);
@@ -168,6 +169,17 @@ const CreateRideScreen = ({ navigation }) => {
       return;
     }
 
+    // Gate: provider details must exist and be verified by our rules (dummy data is checked in backend already).
+    try {
+      await providerApi.getDetails(userToken);
+    } catch (_) {
+      Alert.alert('Provider Details Required', 'Please complete your provider details before creating a ride.', [
+        { text: 'Update Now', onPress: () => navigation.navigate('ProviderDetails') },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+      return;
+    }
+
     setLoading(true);
     try {
       const rideData = {
@@ -179,6 +191,7 @@ const CreateRideScreen = ({ navigation }) => {
         endTime: endTime.toISOString(),
         rideCost: parseFloat(rideCost),
         womenOnly,
+        seats: Math.max(1, Math.min(6, parseInt(seats || '1', 10)))
       };
 
       const response = await rideApi.createRide(rideData, userToken);
@@ -213,12 +226,15 @@ const CreateRideScreen = ({ navigation }) => {
   };
 
   const handleMapSelection = (coordinate) => {
+    const label = coordinate.address && typeof coordinate.address === 'string'
+      ? coordinate.address
+      : `${coordinate.latitude}, ${coordinate.longitude}`;
     if (mapMode === 'start') {
-      setStartPoint(`${coordinate.latitude}, ${coordinate.longitude}`);
+      setStartPoint(label);
     } else if (mapMode === 'destination') {
-      setDestination(`${coordinate.latitude}, ${coordinate.longitude}`);
+      setDestination(label);
     } else if (mapMode === 'break') {
-      setBreakLocations((prev) => prev ? `${prev}, ${coordinate.latitude}, ${coordinate.longitude}` : `${coordinate.latitude}, ${coordinate.longitude}`);
+      setBreakLocations((prev) => prev ? `${prev}; ${label}` : label);
     }
     setShowMap(false); // Close the map after selection
   };
@@ -325,6 +341,19 @@ const CreateRideScreen = ({ navigation }) => {
               value={rideCost}
               onChangeText={setRideCost}
               keyboardType="numeric"
+            />
+          </View>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Seats *</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Number of seats (1-6)"
+              placeholderTextColor={colors.placeholder}
+              value={seats}
+              onChangeText={setSeats}
+              keyboardType="numeric"
+              maxLength={1}
             />
           </View>
 

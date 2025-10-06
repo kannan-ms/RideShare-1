@@ -2,6 +2,7 @@
 // Centralized API utility for making requests to the backend.
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { GOOGLE_MAPS_API_KEY } from '../config/googleMapsConfig';
 
 // --- API Base URL ---
 // IMPORTANT: Adjust this based on your development environment.
@@ -10,7 +11,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // - For iOS Simulator/Device: 'http://localhost:5000/api' (or your local IP)
 // - For Web (if you ever build a web version with Expo): 'http://localhost:5000/api'
 
-const API_BASE_URL = 'http://192.168.43.205:5000/api'; // Default for Android Emulator
+const API_BASE_URL = 'http://10.249.121.205:5000/api'; // Default for Android Emulator
 
 // Generic function to make API calls
 export const apiCall = async (endpoint, method = 'GET', data = null, token = null) => {
@@ -124,5 +125,50 @@ export const rideApi = {
 // OCR API
 export const ocrApi = {
   extractText: (imageBase64, token) => apiCall('/ocr/extract', 'POST', { imageBase64 }, token),
+};
+
+// Requests/Messaging-style APIs
+export const requestsApi = {
+  getProviderRequests: (token) => apiCall('/provider/requests', 'GET', null, token),
+  acceptRequest: (rideId, riderId, token) => apiCall(`/provider/requests/${rideId}/${riderId}/accept`, 'POST', null, token),
+  rejectRequest: (rideId, riderId, token) => apiCall(`/provider/requests/${rideId}/${riderId}/reject`, 'POST', null, token),
+  getRiderRequests: (token) => apiCall('/rider/requests', 'GET', null, token),
+  notifyAccepted: (rideId, message, token, toAllAccepted = true) => apiCall(`/provider/notify/${rideId}`, 'POST', { message, toAllAccepted }, token),
+  getRiderNotifications: (token) => apiCall('/rider/notifications', 'GET', null, token),
+};
+
+// --- Google Maps Helpers ---
+// Reverse geocode coordinates to a human-readable address
+export const getFormattedAddress = async (point) => {
+  try {
+    let latitude = null;
+    let longitude = null;
+    if (typeof point === 'string') {
+      const match = point.match(/\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/);
+      if (match) {
+        latitude = parseFloat(match[1]);
+        longitude = parseFloat(match[2]);
+      }
+    } else if (point && typeof point === 'object') {
+      if (typeof point.latitude === 'number' && typeof point.longitude === 'number') {
+        latitude = point.latitude;
+        longitude = point.longitude;
+      }
+    }
+
+    if (latitude == null || longitude == null) return null;
+    if (!GOOGLE_MAPS_API_KEY) return null;
+
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latitude},${longitude}&key=${GOOGLE_MAPS_API_KEY}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data?.results?.length) {
+      return data.results[0].formatted_address;
+    }
+    return null;
+  } catch (e) {
+    console.log('getFormattedAddress error:', e?.message || e);
+    return null;
+  }
 };
 

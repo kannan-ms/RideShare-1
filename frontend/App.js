@@ -26,6 +26,8 @@ import ProviderDetailsScreen from './src/screens/Home/ProviderDetailsScreen';
 import RiderDetailsScreen from './src/screens/Home/RiderDetailsScreen';
 import RidesScreen from './src/screens/Rides/RidesScreen';
 import CreateRideScreen from './src/screens/Rides/CreateRideScreen';
+import MessagesScreen from './src/screens/Rides/MessagesScreen';
+import ProfileScreen from './src/screens/Profile/ProfileScreen';
 
 // Create a stack navigator
 const Stack = createNativeStackNavigator();
@@ -56,6 +58,7 @@ const AppTabs = () => {
           if (route.name === 'Rides') iconName = 'car';
           if (route.name === 'CreateRide') iconName = 'add-circle';
           if (route.name === 'Profile') iconName = 'person';
+          if (route.name === 'Messages') iconName = 'chatbubble';
           return <Ionicons name={iconName} size={size} color={color} />;
         },
       })}
@@ -63,7 +66,8 @@ const AppTabs = () => {
       <Tab.Screen name="Home" component={HomeScreen} />
       <Tab.Screen name="Rides" component={RidesScreen} />
       <Tab.Screen name="CreateRide" component={CreateRideScreen} />
-      <Tab.Screen name="Profile" component={ProviderDetailsScreen} />
+      <Tab.Screen name="Messages" component={MessagesScreen} />
+      <Tab.Screen name="Profile" component={ProfileScreen} />
     </Tab.Navigator>
   );
 };
@@ -84,8 +88,16 @@ const RootNavigator = () => {
 
   return (
     <NavigationContainer>
-      {/* If userToken exists, show the main app stack, otherwise show the authentication stack */}
-      {userToken ? <AppTabs /> : <AuthStack />}
+      {/* App tabs plus hidden detail screens so navigation.navigate('RiderDetails'/'ProviderDetails') works */}
+      {userToken ? (
+        <Stack.Navigator screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="Tabs" component={AppTabs} />
+          <Stack.Screen name="RiderDetails" component={RiderDetailsScreen} />
+          <Stack.Screen name="ProviderDetails" component={ProviderDetailsScreen} />
+        </Stack.Navigator>
+      ) : (
+        <AuthStack />
+      )}
     </NavigationContainer>
   );
 };

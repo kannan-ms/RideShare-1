@@ -16,7 +16,7 @@ import { authApi, providerApi, riderApi } from '../../utils/api';
 import { colors, spacing, borderRadius, typography, shadow } from '../../styles/theme';
 
 const HomeScreen = ({ navigation }) => {
-  const { userToken, userRole, signOut, setUserRole } = useContext(AuthContext);
+  const { userToken, userRole, setUserRole } = useContext(AuthContext);
   const [loadingRoleUpdate, setLoadingRoleUpdate] = useState(false);
   const [userName, setUserName] = useState('User');
 
@@ -101,16 +101,8 @@ const HomeScreen = ({ navigation }) => {
       <View style={styles.card}>
         <Text style={styles.title}>Hello, {userName}!</Text>
         <Text style={styles.subtitle}>Welcome to RideShare!</Text>
-        <Text style={styles.currentRoleText}>Your current role: <Text style={styles.roleText}>{userRole}</Text></Text>
-
-        <Text style={styles.instructionText}>What would you like to do today?</Text>
         <Text style={styles.flowText}>
-          {userRole === 'rider' 
-            ? 'Request rides or update your rider details'
-            : userRole === 'provider'
-            ? 'Provide rides or update your vehicle details'
-            : 'Choose your role to get started'
-          }
+          Find and book rides, or offer your own rides safely. Use the tabs below to explore Rides, Messages, Create Ride, and your Profile.
         </Text>
 
         <TouchableOpacity
@@ -141,11 +133,7 @@ const HomeScreen = ({ navigation }) => {
           )}
         </TouchableOpacity>
 
-        <TouchableOpacity style={[styles.button, styles.logoutButton]} onPress={signOut}>
-          <Text style={styles.buttonText}>Logout</Text>
-        </TouchableOpacity>
-
-        {/* Manage Profile Button - shown when user has a role */}
+        {/* Manage Details Button - shown when user has a role */}
         {userRole && (
           <TouchableOpacity 
             style={styles.manageProfileButton} 
@@ -157,9 +145,7 @@ const HomeScreen = ({ navigation }) => {
               }
             }}
           >
-            <Text style={styles.manageProfileButtonText}>
-              Manage {userRole === 'rider' ? 'Rider' : 'Vehicle'} Profile
-            </Text>
+            <Text style={styles.manageProfileButtonText}>Update {userRole === 'rider' ? 'Rider' : 'Provider'} Details</Text>
           </TouchableOpacity>
         )}
       </View>

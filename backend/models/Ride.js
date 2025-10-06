@@ -37,6 +37,12 @@ const RideSchema = new mongoose.Schema({
         type: Number,
         required: true
     },
+    seats: {
+        type: Number,
+        default: 1,
+        min: 1,
+        max: 6
+    },
     riders: [{
         user: {
             type: mongoose.Schema.Types.ObjectId,
@@ -50,6 +56,11 @@ const RideSchema = new mongoose.Schema({
             enum: ['pending', 'accepted', 'rejected', 'in-ride', 'completed', 'canceled'],
             default: 'pending'
         }
+    }],
+    notifications: [{
+        message: { type: String, required: true },
+        toRiderIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+        createdAt: { type: Date, default: Date.now }
     }],
     status: {
         type: String,
