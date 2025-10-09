@@ -1,6 +1,9 @@
 // src/screens/Profile/ProfileScreen.js
 import React, { useContext, useEffect, useState } from 'react';
-import { SafeAreaView, StyleSheet, View, Text, ScrollView, ActivityIndicator, TouchableOpacity } from 'react-native';
+import { SafeAreaView, StyleSheet, View, Text, ScrollView, ActivityIndicator, TouchableOpacity, Image, Alert } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from '@react-navigation/native';
+import * as ImagePicker from 'expo-image-picker';
 import { AuthContext } from '../../context/AuthContext';
 import { authApi, providerApi, riderApi } from '../../utils/api';
 import { colors, spacing, borderRadius, typography, shadow } from '../../styles/theme';
@@ -17,6 +20,9 @@ const ProfileScreen = ({ navigation }) => {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState(null);
   const [details, setDetails] = useState(null);
+  const [livePhoto, setLivePhoto] = useState(null);
+  const [cameraPermission, setCameraPermission] = useState(null);
+  const [updating, setUpdating] = useState(false);
 
   const load = async () => {
     if (!userToken) return;
@@ -25,9 +31,21 @@ const ProfileScreen = ({ navigation }) => {
       const u = await authApi.getProfile(userToken);
       setUser(u);
       if (userRole === 'provider') {
-        try { setDetails(await providerApi.getDetails(userToken)); } catch (_) { setDetails(null); }
+        try { 
+          const d = await providerApi.getDetails(userToken);
+          setDetails(d); 
+          if (d?.livePhotoUrl) {
+            await AsyncStorage.setItem('profileLivePhotoUrl', d.livePhotoUrl);
+          }
+        } catch (_) { setDetails(null); }
       } else if (userRole === 'rider') {
-        try { setDetails(await riderApi.getDetails(userToken)); } catch (_) { setDetails(null); }
+        try { 
+          const d = await riderApi.getDetails(userToken);
+          setDetails(d);
+          if (d?.livePhotoUrl) {
+            await AsyncStorage.setItem('profileLivePhotoUrl', d.livePhotoUrl);
+          }
+        } catch (_) { setDetails(null); }
       }
     } catch (e) {
       setUser(null); setDetails(null);
@@ -36,7 +54,98 @@ const ProfileScreen = ({ navigation }) => {
     }
   };
 
-  useEffect(() => { load(); }, [userRole]);
+  useEffect(() => { 
+    load(); 
+    requestCameraPermission();
+  }, [userRole]);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      // On focus, try to show cached photo immediately, then refresh from API
+      (async () => {
+        try {
+          const cached = await AsyncStorage.getItem('profileLivePhotoUrl');
+          if (cached) setDetails(prev => ({ ...(prev || {}), livePhotoUrl: cached }));
+        } catch (_) {}
+        await load();
+      })();
+      return () => {};
+    }, [userRole, userToken])
+  );
+
+  const requestCameraPermission = async () => {
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      setCameraPermission(status === 'granted');
+    } catch (e) {
+      console.log('Camera permission error:', e);
+    }
+  };
+
+  const takeLivePhoto = async () => {
+    if (!cameraPermission) {
+      Alert.alert('Permission required', 'Camera permission is required to take a live photo.');
+      return;
+    }
+    
+    // Show warning about front camera requirement
+    Alert.alert(
+      'Live Photo Required',
+      'Please use the front-facing camera to take a selfie for your profile photo.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Take Photo', 
+          onPress: async () => {
+            try {
+              const result = await ImagePicker.launchCameraAsync({
+                allowsEditing: true,
+                aspect: [4, 3],
+                quality: 0.8,
+                base64: true,
+                cameraType: ImagePicker.CameraType.front, // Force front camera for selfie
+                mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                allowsMultipleSelection: false,
+              });
+              if (!result.canceled && result.assets && result.assets.length > 0) {
+                setLivePhoto({ uri: result.assets[0].uri, base64: result.assets[0].base64 });
+              }
+            } catch (err) {
+              console.error('Live photo capture failed:', err);
+              Alert.alert('Camera Error', 'Failed to capture photo. Please try again.');
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const updateProfilePhoto = async () => {
+    if (!livePhoto) {
+      Alert.alert('No Photo', 'Please take a live photo first.');
+      return;
+    }
+    setUpdating(true);
+    try {
+      const photoData = {
+        livePhotoUrl: `data:image/jpeg;base64,${livePhoto.base64}`
+      };
+      
+      if (userRole === 'provider') {
+        await providerApi.saveDetails(photoData, userToken);
+      } else if (userRole === 'rider') {
+        await riderApi.saveDetails(photoData, userToken);
+      }
+      await AsyncStorage.setItem('profileLivePhotoUrl', photoData.livePhotoUrl);
+      
+      Alert.alert('Success', 'Profile photo updated successfully!');
+      await load(); // Reload to show updated photo
+    } catch (e) {
+      Alert.alert('Error', 'Failed to update profile photo. Please try again.');
+    } finally {
+      setUpdating(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -52,6 +161,40 @@ const ProfileScreen = ({ navigation }) => {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
+        {/* User Profile Photo Section */}
+        <View style={styles.photoCard}>
+          <Text style={styles.title}>User Profile</Text>
+          <View style={styles.photoContainer}>
+            {details?.livePhotoUrl ? (
+              <Image source={{ uri: details.livePhotoUrl }} style={styles.profilePhoto} />
+            ) : livePhoto ? (
+              <Image source={{ uri: livePhoto.uri }} style={styles.profilePhoto} />
+            ) : (
+              <View style={styles.placeholderPhoto}>
+                <Text style={styles.placeholderText}>No Photo</Text>
+              </View>
+            )}
+          </View>
+          <View style={styles.photoActions}>
+            <TouchableOpacity style={styles.photoButton} onPress={takeLivePhoto}>
+              <Text style={styles.photoButtonText}>Take Live Photo</Text>
+            </TouchableOpacity>
+            {livePhoto && (
+              <TouchableOpacity 
+                style={[styles.photoButton, styles.updateButton]} 
+                onPress={updateProfilePhoto}
+                disabled={updating}
+              >
+                {updating ? (
+                  <ActivityIndicator color={colors.cardBackground} />
+                ) : (
+                  <Text style={styles.photoButtonText}>Update Photo</Text>
+                )}
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+
         <View style={styles.card}>
           <Text style={styles.title}>Account</Text>
           <Row label="Name" value={user?.name} />
@@ -103,6 +246,15 @@ const styles = StyleSheet.create({
   content: { padding: spacing.lg },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   loadingText: { ...typography.body, color: colors.textSecondary, marginTop: spacing.sm },
+  photoCard: { backgroundColor: colors.cardBackground, borderRadius: borderRadius.lg, padding: spacing.lg, marginBottom: spacing.md, alignItems: 'center', ...shadow.default },
+  photoContainer: { marginBottom: spacing.md },
+  profilePhoto: { width: 120, height: 120, borderRadius: 60, borderWidth: 3, borderColor: colors.primary },
+  placeholderPhoto: { width: 120, height: 120, borderRadius: 60, backgroundColor: colors.border, justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: colors.primary },
+  placeholderText: { ...typography.body, color: colors.textSecondary },
+  photoActions: { flexDirection: 'row', justifyContent: 'center', flexWrap: 'wrap' },
+  photoButton: { backgroundColor: colors.primary, paddingVertical: spacing.sm, paddingHorizontal: spacing.md, borderRadius: borderRadius.md, marginHorizontal: spacing.xs, marginVertical: spacing.xs, ...shadow.button },
+  updateButton: { backgroundColor: colors.accent },
+  photoButtonText: { ...typography.body, color: colors.cardBackground, fontWeight: 'bold' },
   card: { backgroundColor: colors.cardBackground, borderRadius: borderRadius.lg, padding: spacing.lg, marginBottom: spacing.md, ...shadow.default },
   title: { ...typography.h2, color: colors.textPrimary, marginBottom: spacing.md },
   row: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing.xs },

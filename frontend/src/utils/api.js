@@ -11,7 +11,7 @@ import { GOOGLE_MAPS_API_KEY } from '../config/googleMapsConfig';
 // - For iOS Simulator/Device: 'http://localhost:5000/api' (or your local IP)
 // - For Web (if you ever build a web version with Expo): 'http://localhost:5000/api'
 
-const API_BASE_URL = 'http://10.249.121.205:5000/api'; // Default for Android Emulator
+const API_BASE_URL = 'http://192.168.139.205:5000/api'; // Default for Android Emulator
 
 // Generic function to make API calls
 export const apiCall = async (endpoint, method = 'GET', data = null, token = null) => {
@@ -105,6 +105,7 @@ export const authApi = {
 export const providerApi = {
   saveDetails: (details, token) => apiCall('/provider/details', 'POST', details, token),
   getDetails: (token) => apiCall('/provider/details', 'GET', null, token),
+  getPublicByUserId: (userId, token) => apiCall(`/provider/public/${userId}`, 'GET', null, token),
 };
 
 // MODIFIED: Ensure these are correctly exported

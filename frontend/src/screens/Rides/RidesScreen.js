@@ -63,6 +63,7 @@ const RidesScreen = ({ navigation }) => {
         const now = Date.now();
         fetchedRides = (response.rides || []).filter(r => new Date(r.startTime).getTime() > now && r.status === 'created');
       } else {
+        // Show available rides to all users (including those without rider details)
         const response = await rideApi.getAvailableRides(userToken);
         fetchedRides = response.rides || [];
       }
@@ -203,6 +204,26 @@ const RidesScreen = ({ navigation }) => {
         { text: 'Delete', style: 'destructive', onPress: () => deleteRide(ride) },
       ]
     );
+  };
+
+  const viewProviderDetails = async (ride) => {
+    try {
+      const providerId = ride.provider?._id || ride.provider?.id || ride.provider;
+      if (!providerId) {
+        Alert.alert('Info', 'Provider details not available.');
+        return;
+      }
+      const res = await providerApi.getPublicByUserId(providerId, userToken);
+      const d = res?.providerDetails;
+      if (!d) {
+        Alert.alert('Info', 'Provider details not found.');
+        return;
+      }
+      const msg = `Category: ${d.vehicleCategory || '-'}\nVehicle: ${d.vehicleNumber || '-'}\nRC: ${d.rcNumber || '-'}\nInsurance: ${d.insuranceNumber || '-'}\nLicense: ${d.licenseNumber || '-'}\nAadhaar: ${d.aadharNumber || '-'}${d.vehicleType ? `\nType: ${d.vehicleType}` : ''}`;
+      Alert.alert('Provider Details', msg, [{ text: 'OK' }]);
+    } catch (e) {
+      Alert.alert('Error', 'Failed to load provider details.');
+    }
   };
 
   const deleteRide = async (ride) => {
@@ -349,12 +370,20 @@ const RidesScreen = ({ navigation }) => {
         
         <View style={styles.rideActions}>
           {userRole === 'rider' ? (
-            <TouchableOpacity
-              style={[styles.actionButton, styles.bookButton]}
-              onPress={() => handleRideAction(ride, 'book')}
-            >
-              <Text style={styles.actionButtonText}>Book Ride</Text>
-            </TouchableOpacity>
+            <>
+              <TouchableOpacity
+                style={[styles.actionButton, styles.bookButton]}
+                onPress={() => handleRideAction(ride, 'book')}
+              >
+                <Text style={styles.actionButtonText}>Book Ride</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionButton, styles.manageButton]}
+                onPress={() => viewProviderDetails(ride)}
+              >
+                <Text style={styles.actionButtonText}>View Provider Details</Text>
+              </TouchableOpacity>
+            </>
           ) : (
             <TouchableOpacity
               style={[styles.actionButton, styles.manageButton]}
@@ -376,7 +405,7 @@ const RidesScreen = ({ navigation }) => {
         </Text>
         <Text style={styles.subtitle}>
           {userRole === 'rider' 
-            ? 'Find and book your perfect ride' 
+            ? 'Browse available rides - complete your details to book' 
             : 'Manage your ride offerings'
           }
         </Text>
@@ -401,22 +430,6 @@ const RidesScreen = ({ navigation }) => {
             </Text>
           </TouchableOpacity>
           
-          {userRole === 'rider' && (
-            <TouchableOpacity
-              style={[styles.profileButton, styles.bookRideButton]}
-              onPress={() => {
-                Alert.alert(
-                  'Book a Ride',
-                  'Browse available rides below and tap "Book Ride" on any ride you\'d like to book.',
-                  [
-                    { text: 'Got it!', style: 'default' }
-                  ]
-                );
-              }}
-            >
-              <Text style={styles.profileButtonText}>How to Book a Ride</Text>
-            </TouchableOpacity>
-          )}
 
           {userRole === 'rider' && (
             <TouchableOpacity

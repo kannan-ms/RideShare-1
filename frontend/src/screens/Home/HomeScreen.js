@@ -133,21 +133,6 @@ const HomeScreen = ({ navigation }) => {
           )}
         </TouchableOpacity>
 
-        {/* Manage Details Button - shown when user has a role */}
-        {userRole && (
-          <TouchableOpacity 
-            style={styles.manageProfileButton} 
-            onPress={() => {
-              if (userRole === 'rider') {
-                navigation.navigate('RiderDetails');
-              } else if (userRole === 'provider') {
-                navigation.navigate('ProviderDetails');
-              }
-            }}
-          >
-            <Text style={styles.manageProfileButtonText}>Update {userRole === 'rider' ? 'Rider' : 'Provider'} Details</Text>
-          </TouchableOpacity>
-        )}
       </View>
     </SafeAreaView>
   );

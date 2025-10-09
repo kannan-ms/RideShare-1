@@ -284,6 +284,23 @@ app.get('/api/provider/details', auth, async (req, res) => {
     }
 });
 
+// Public (limited) provider details by userId for riders to view after posting/booking rides
+// @route   GET /api/provider/public/:userId
+// @access  Private (any authenticated user)
+app.get('/api/provider/public/:userId', auth, async (req, res) => {
+    try {
+        const providerDetails = await ProviderDetails.findOne({ user: req.params.userId }).select('vehicleCategory vehicleNumber rcNumber insuranceNumber licenseNumber aadharNumber vehicleType');
+        if (!providerDetails) {
+            return res.status(404).json({ message: 'Provider details not found.' });
+        }
+        // Return limited non-image info; images are omitted for privacy
+        res.json({ providerDetails });
+    } catch (err) {
+        console.error('Get public provider details error:', err.message);
+        res.status(500).json({ message: 'Server error fetching provider details.' });
+    }
+});
+
 // --- Provider Rides Routes (Corrected) ---
 
 // @route   GET /api/provider/rides
@@ -322,8 +339,15 @@ app.delete('/api/provider/rides/:rideId', auth, async (req, res) => {
         if (ride.status === 'started' || ride.status === 'completed') {
             return res.status(400).json({ message: 'Ride cannot be deleted after it has started or completed.' });
         }
-        await ride.deleteOne();
-        return res.json({ message: 'Ride deleted successfully.' });
+        // Instead of hard delete, mark as canceled so riders can see notifications
+        const recipients = ride.riders
+            .filter(r => ['pending', 'accepted'].includes(r.status))
+            .map(r => r.user);
+        const message = 'This ride was canceled by the provider.';
+        ride.notifications.push({ message, toRiderIds: recipients });
+        ride.status = 'canceled';
+        await ride.save();
+        return res.json({ message: 'Ride canceled and riders notified.' });
     } catch (err) {
         console.error('Delete ride error:', err.message);
         return res.status(500).json({ message: 'Server error deleting ride.' });
@@ -474,9 +498,9 @@ app.get('/api/rides/search', auth, async (req, res) => {
     }
 });
 
-// @route   GET /api/rides
-// @desc    Get all available rides (Rider only)
-// @access  Private (Requires Rider role)
+// @route   GET /api/rides
+// @desc    Get all available rides (All authenticated users can view)
+// @access  Private (Any authenticated user)
 app.get('/api/rides', auth, async (req, res) => {
     const user = await User.findById(req.user.id);
     if (!user) {
@@ -484,7 +508,17 @@ app.get('/api/rides', auth, async (req, res) => {
     }
     try {
         const now = new Date();
-        const rides = await Ride.find({ status: 'created', startTime: { $gt: now } })
+        let query = { status: 'created', startTime: { $gt: now } };
+        
+        // Filter women-only rides based on user gender
+        if (user.gender !== 'Female') {
+            query.womenOnly = { $ne: true };
+            console.log('Filtering out women-only rides for user gender:', user.gender);
+        } else {
+            console.log('Showing all rides including women-only for female user');
+        }
+        
+        const rides = await Ride.find(query)
         .populate('provider', 'name mobileNumber')
         .select('-riders -liveLocation')
         .sort({ createdAt: -1 });
@@ -508,6 +542,12 @@ app.post('/api/rides/book/:rideId', auth, async (req, res) => {
         if (!ride) {
             return res.status(404).json({ message: 'Ride not found.' });
         }
+        
+        // Check if ride is women-only and user is not female
+        if (ride.womenOnly && user.gender !== 'Female') {
+            return res.status(403).json({ message: 'This ride is for women only.' });
+        }
+        
         const acceptedCount = ride.riders.filter(r => r.status === 'accepted').length;
         if (ride.seats && acceptedCount >= ride.seats) {
             return res.status(400).json({ message: 'Ride is full.' });

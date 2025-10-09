@@ -2,7 +2,7 @@
 // Unified messages/requests view for riders and providers
 
 import React, { useContext, useEffect, useState } from 'react';
-import { SafeAreaView, StyleSheet, View, Text, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
+import { SafeAreaView, StyleSheet, View, Text, FlatList, TouchableOpacity, RefreshControl, TextInput } from 'react-native';
 import { AuthContext } from '../../context/AuthContext';
 import { requestsApi } from '../../utils/api';
 import { colors, spacing, borderRadius, typography, shadow } from '../../styles/theme';
@@ -29,8 +29,19 @@ const MessagesScreen = () => {
         const res = await requestsApi.getProviderRequests(userToken);
         setRequests(res.requests || []);
       } else if (userRole === 'rider') {
-        const res = await requestsApi.getRiderRequests(userToken);
-        setRequests(res.requests || []);
+        const [reqRes, notiRes] = await Promise.all([
+          requestsApi.getRiderRequests(userToken),
+          requestsApi.getRiderNotifications(userToken),
+        ]);
+        const requestsArr = reqRes.requests || [];
+        const notificationsArr = (notiRes.notifications || []).map(n => ({
+          isNotification: true,
+          rideId: n.rideId,
+          message: n.message,
+          createdAt: n.createdAt,
+        }));
+        // Merge notifications at top
+        setRequests([...notificationsArr, ...requestsArr]);
       }
     } catch (e) {
       console.log('Requests load error:', e?.message || e);
@@ -77,6 +88,18 @@ const MessagesScreen = () => {
   };
 
   const renderItem = ({ item }) => {
+    if (item.isNotification) {
+      return (
+        <View style={styles.card}>
+          <View style={styles.cardHeader}> 
+            <Text style={styles.title} numberOfLines={1}>Ride Update</Text>
+            <StatusBadge status={'accepted'} />
+          </View>
+          <Text style={styles.subtitle}>{new Date(item.createdAt).toLocaleString()}</Text>
+          <Text style={styles.body}>{item.message}</Text>
+        </View>
+      );
+    }
     return (
       <View style={styles.card}>
         <View style={styles.cardHeader}> 
@@ -98,12 +121,14 @@ const MessagesScreen = () => {
             <View style={styles.notifyBox}>
               <Text style={styles.notifyLabel}>Notify accepted riders</Text>
               <View style={styles.notifyRow}>
-                <View style={styles.notifyInput}>
-                  <Text
-                    style={styles.notifyInputText}
-                    onPress={() => {}}
-                  >{notifyTextByRide[item.rideId] || 'Type a quick update (e.g., “Another rider joined, we will split costs.”)'}</Text>
-                </View>
+                <TextInput
+                  style={styles.notifyInput}
+                  placeholder="Type a quick update (e.g., 'Another rider joined, we will split costs.')"
+                  placeholderTextColor={colors.textSecondary}
+                  value={notifyTextByRide[item.rideId] || ''}
+                  onChangeText={(text) => setNotifyTextByRide(prev => ({ ...prev, [item.rideId]: text }))}
+                  multiline
+                />
                 <TouchableOpacity style={[styles.btn, styles.accept]} onPress={() => sendNotify(item.rideId)}>
                   <Text style={styles.btnText}>Send</Text>
                 </TouchableOpacity>
@@ -175,8 +200,7 @@ const styles = StyleSheet.create({
   notifyBox: { marginTop: spacing.md },
   notifyLabel: { ...typography.body, color: colors.textSecondary, marginBottom: spacing.xs },
   notifyRow: { flexDirection: 'row', alignItems: 'center' },
-  notifyInput: { flex: 1, borderWidth: 1, borderColor: colors.border, borderRadius: borderRadius.md, padding: spacing.md, marginRight: spacing.sm },
-  notifyInputText: { ...typography.body, color: colors.textPrimary, opacity: 0.8 },
+  notifyInput: { flex: 1, borderWidth: 1, borderColor: colors.border, borderRadius: borderRadius.md, padding: spacing.md, marginRight: spacing.sm, ...typography.body, color: colors.textPrimary },
   empty: { padding: spacing.xxl, alignItems: 'center' },
   emptyText: { ...typography.h2, color: colors.textSecondary },
   emptySubtext: { ...typography.body, color: colors.textSecondary, marginTop: spacing.xs, textAlign: 'center' },
