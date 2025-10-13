@@ -18,6 +18,7 @@ const path = require('path');
 const ProviderDetails = require('./models/ProviderDetails');
 const RiderDetails = require('./models/RiderDetails');
 const Ride = require('./models/Ride');
+const RideOtp = require('./models/RideOtp');
 
 // Initialize Express app
 const app = express();
@@ -576,14 +577,24 @@ app.get('/api/provider/requests', auth, async (req, res) => {
         if (!user || user.role !== 'provider') {
             return res.status(403).json({ message: 'Only providers can view ride requests.' });
         }
-        const rides = await Ride.find({ provider: req.user.id, 'riders.status': 'pending' })
+        // Include both pending and accepted riders so providers can manage OTPs for accepted passengers
+        const rides = await Ride.find({ provider: req.user.id, 'riders.status': { $in: ['pending', 'accepted', 'in-ride', 'started'] } })
             .populate('riders.user', 'name mobileNumber')
             .sort({ createdAt: -1 });
-        // Flatten to request items
+        // Flatten to request items, but first fetch any active (unverified) OTPs so the UI can avoid re-generating
         const requests = [];
+
+        // Collect ride ids for an efficient OTP lookup
+        const rideIds = rides.map(r => r.id);
+        // Find all unverified OTPs for these rides
+        const activeOtps = await RideOtp.find({ rideId: { $in: rideIds }, isVerified: false }).lean();
+        const otpSet = new Set(activeOtps.map(o => `${o.rideId}_${o.passengerId}`));
+
         rides.forEach(ride => {
             ride.riders.forEach(r => {
-                if (r.status === 'pending') {
+                // include pending, accepted, in-ride and started so providers continue to see and manage past accepted/started rides
+                if (['pending','accepted','in-ride','started'].includes(r.status)) {
+                    const key = `${ride.id}_${r.user.id}`;
                     requests.push({
                         rideId: ride.id,
                         startPoint: ride.startPoint,
@@ -591,6 +602,7 @@ app.get('/api/provider/requests', auth, async (req, res) => {
                         startTime: ride.startTime,
                         rider: { id: r.user.id, name: r.user.name, mobileNumber: r.user.mobileNumber },
                         status: r.status,
+                        otpGenerated: otpSet.has(key),
                     });
                 }
             });
@@ -618,12 +630,143 @@ app.post('/api/provider/requests/:rideId/:riderId/accept', auth, async (req, res
         const riderEntry = ride.riders.find(r => r.user.toString() === riderId && r.status === 'pending');
         if (!riderEntry) return res.status(404).json({ message: 'Pending request not found.' });
         riderEntry.status = 'accepted';
-        riderEntry.otp = '1234';
+        // Persist change first
         await ride.save();
-        res.json({ message: 'Request accepted', rideId, riderId });
+
+        // Automatically generate OTP for this accepted passenger and send via in-app notification
+        try {
+            // remove any previous unverified OTPs
+            await RideOtp.deleteMany({ rideId: rideId, passengerId: riderId, isVerified: false });
+            const otp = Math.floor(1000 + Math.random() * 9000).toString();
+            const otpHash = await bcrypt.hash(otp, 10);
+            const rideOtp = new RideOtp({ otpHash, rideId: rideId, passengerId: riderId, providerId: req.user.id });
+            await rideOtp.save();
+            const message = `Your boarding OTP is: ${otp}`;
+            ride.notifications.push({ message, toRiderIds: [riderId] });
+            await ride.save();
+            console.debug(`Generated OTP event for ride ${rideId} passenger ${riderId}`);
+        } catch (otpErr) {
+            console.error('Error generating OTP on accept:', otpErr?.message || otpErr);
+        }
+
+        res.json({ message: 'Request accepted and OTP sent to passenger', rideId, riderId });
     } catch (err) {
         console.error('Accept request error:', err.message);
         res.status(500).json({ message: 'Server error updating request.' });
+    }
+});
+
+// ---------------------- OTP Endpoints ----------------------
+// Generate OTP for a particular rider of a ride (Provider only)
+app.post('/api/otp/generate', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'provider') {
+            return res.status(403).json({ message: 'Only providers can generate OTPs.' });
+        }
+        const { rideId, passengerId } = req.body || {};
+        if (!rideId || !passengerId) {
+            return res.status(400).json({ message: 'rideId and passengerId are required.' });
+        }
+        const ride = await Ride.findById(rideId);
+        if (!ride) return res.status(404).json({ message: 'Ride not found.' });
+        if (ride.provider.toString() !== req.user.id) return res.status(403).json({ message: 'Not authorized for this ride.' });
+
+        // Ensure passenger is accepted for this ride
+        const riderEntry = ride.riders.find(r => r.user.toString() === passengerId && r.status === 'accepted');
+        if (!riderEntry) return res.status(400).json({ message: 'Passenger is not accepted for this ride.' });
+
+        // Generate secure 4-digit numeric OTP
+        const otp = Math.floor(1000 + Math.random() * 9000).toString();
+
+        // Hash OTP using bcrypt
+        const otpHash = await bcrypt.hash(otp, 10);
+
+        // Save to RideOtp collection (upsert pattern: remove previous OTPs for same ride/passenger)
+        await RideOtp.deleteMany({ rideId, passengerId, isVerified: false });
+        const rideOtp = new RideOtp({ otpHash, rideId, passengerId, providerId: req.user.id });
+        await rideOtp.save();
+
+        // Send OTP via in-app notification to the passenger (do not return OTP in API)
+        const message = `Your boarding OTP is: ${otp}`;
+        ride.notifications.push({ message, toRiderIds: [passengerId] });
+        await ride.save();
+
+    // For debugging only: log generation event (do not print OTP in logs)
+    console.debug(`Generated OTP event for ride ${rideId} passenger ${passengerId}`);
+
+        return res.json({ message: 'OTP generated and sent to passenger (in-app).' });
+    } catch (err) {
+        console.error('Generate OTP error:', err.message);
+        return res.status(500).json({ message: 'Server error generating OTP.' });
+    }
+});
+
+// Verify OTP (typically called by provider when passenger boards)
+app.post('/api/otp/verify', auth, async (req, res) => {
+    try {
+        const { rideId, passengerId, otp } = req.body || {};
+        if (!rideId || !passengerId || !otp) {
+            return res.status(400).json({ message: 'rideId, passengerId and otp are required.' });
+        }
+
+        const ride = await Ride.findById(rideId);
+        if (!ride) return res.status(404).json({ message: 'Ride not found.' });
+
+        // Allow verify if requester is provider of this ride or the passenger themself
+        if (req.user.id !== ride.provider.toString() && req.user.id !== passengerId) {
+            return res.status(403).json({ message: 'Not authorized to verify this OTP.' });
+        }
+
+        // Try to atomically increment attempts only if attempts < 3 and not verified
+        const updated = await RideOtp.findOneAndUpdate(
+            { rideId, passengerId, isVerified: false, attempts: { $lt: 3 } },
+            { $inc: { attempts: 1 } },
+            { new: true }
+        );
+
+        if (!updated) {
+            // Could be not found or already exhausted attempts
+            const maybe = await RideOtp.findOne({ rideId, passengerId });
+            if (!maybe) return res.status(404).json({ message: 'No active OTP found for this ride/passenger.' });
+            if (maybe.isVerified) return res.status(400).json({ message: 'OTP already verified.' });
+            // attempts might be >=3
+            const riderEntry = ride.riders.find(r => r.user.toString() === passengerId);
+            if (riderEntry) riderEntry.status = 'rejected';
+            ride.notifications.push({ message: 'A passenger was rejected due to repeated invalid OTP attempts.', toRiderIds: [passengerId] });
+            await ride.save();
+            return res.status(403).json({ message: 'Maximum OTP attempts exceeded. Passenger rejected.' });
+        }
+
+        // We incremented attempts optimistically; now compare the provided OTP with stored hash
+        const match = await bcrypt.compare(otp.toString(), updated.otpHash);
+        if (match) {
+            // Mark as verified
+            await RideOtp.findByIdAndUpdate(updated._id, { isVerified: true });
+            // Update ride and rider status
+            const riderEntry = ride.riders.find(r => r.user.toString() === passengerId);
+            if (riderEntry) riderEntry.status = 'in-ride';
+            if (ride.status !== 'started') ride.status = 'started';
+            ride.notifications.push({ message: `Passenger ${passengerId} verified and boarded. Ride started.`, toRiderIds: [passengerId] });
+            await ride.save();
+            return res.json({ message: 'OTP verified. Ride started for this passenger.' });
+        }
+
+        // Incorrect OTP — compute remaining attempts (updated.attempts already incremented)
+        const remaining = Math.max(0, 3 - (updated.attempts || 0));
+        if ((updated.attempts || 0) >= 3) {
+            // Reject the passenger
+            const riderEntry = ride.riders.find(r => r.user.toString() === passengerId);
+            if (riderEntry) riderEntry.status = 'rejected';
+            ride.notifications.push({ message: 'A passenger was rejected due to repeated invalid OTP attempts.', toRiderIds: [passengerId] });
+            await ride.save();
+            return res.status(403).json({ message: 'Maximum OTP attempts exceeded. Passenger rejected.' });
+        }
+
+        return res.status(400).json({ message: 'Invalid OTP.', attemptsLeft: remaining });
+    } catch (err) {
+        console.error('Verify OTP error:', err.message);
+        return res.status(500).json({ message: 'Server error verifying OTP.' });
     }
 });
 
@@ -736,9 +879,14 @@ app.get('/api/rider/requests', auth, async (req, res) => {
     }
 });
 
-// Start the server
-const HOST = '0.0.0.0';
-app.listen(PORT, HOST, () => console.log(`Server running on http://${HOST}:${PORT}`));
+// Start the server only when this file is run directly. Export `app` for tests.
+// Start the server only when run directly. This lets tests require the app without starting the listener.
+if (require.main === module) {
+    const HOST = '0.0.0.0';
+    app.listen(PORT, HOST, () => console.log(`Server running on http://${HOST}:${PORT}`));
+}
+
+module.exports = app;
 
 // --- OCR: Google Cloud Vision Text Extraction ---
 // Requires service account JSON file placed at backend/google-cloud-vision-api.json

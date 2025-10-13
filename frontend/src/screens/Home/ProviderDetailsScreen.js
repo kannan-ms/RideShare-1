@@ -282,7 +282,7 @@ const ProviderDetailsScreen = ({ navigation }) => {
             text: 'Continue to Rides',
             onPress: () => {
               // Navigate to rides page or show available rides
-              navigation.navigate('Rides');
+              navigation.navigate('Tabs', { screen: 'Rides' });
             }
           },
           {
@@ -325,7 +325,7 @@ const ProviderDetailsScreen = ({ navigation }) => {
           <View style={styles.navigationSection}>
             <TouchableOpacity
               style={styles.navButton}
-              onPress={() => navigation.navigate('Rides')}
+              onPress={() => navigation.navigate('Tabs', { screen: 'Rides' })}
             >
               <Text style={styles.navButtonText}>← Back to Rides</Text>
             </TouchableOpacity>

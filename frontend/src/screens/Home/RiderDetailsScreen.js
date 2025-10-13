@@ -257,8 +257,8 @@ const RiderDetailsScreen = ({ navigation }) => {
           {
             text: 'Continue to Rides',
             onPress: () => {
-              // Navigate to rides page or show available rides
-              navigation.navigate('Rides');
+              // Navigate to rides page (nested under Tabs)
+              navigation.navigate('Tabs', { screen: 'Rides' });
             }
           },
           {
@@ -301,14 +301,14 @@ const RiderDetailsScreen = ({ navigation }) => {
             >
               <TouchableOpacity
                 style={[styles.profileActionButton, styles.profileActionButtonFull]}
-                onPress={() => navigation.navigate('Rides')}
+                onPress={() => navigation.navigate('Tabs', { screen: 'Rides' })}
               >
                 <Text style={styles.profileActionButtonText}>View Available Rides</Text>
               </TouchableOpacity>
               
               <TouchableOpacity
                 style={[styles.profileActionButton, styles.profileActionButtonFull]}
-                onPress={() => navigation.navigate('Home')}
+                onPress={() => navigation.navigate('Tabs', { screen: 'Home' })}
               >
                 <Text style={styles.profileActionButtonText}>Back to Home</Text>
               </TouchableOpacity>

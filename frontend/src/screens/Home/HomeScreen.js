@@ -58,7 +58,7 @@ const HomeScreen = ({ navigation }) => {
       const hasDetails = await checkUserDetails(newRole);
       if (hasDetails) {
         // User has details, go directly to rides page
-        navigation.navigate('Rides');
+  navigation.navigate('Tabs', { screen: 'Rides' });
       } else {
         // User doesn't have details, go to details screen first
         if (newRole === 'rider') {
@@ -79,7 +79,7 @@ const HomeScreen = ({ navigation }) => {
       const hasDetails = await checkUserDetails(data.newRole);
       if (hasDetails) {
         // User has details, go directly to rides page
-        navigation.navigate('Rides');
+  navigation.navigate('Tabs', { screen: 'Rides' });
       } else {
         // User doesn't have details, go to details screen first
         if (data.newRole === 'rider') {

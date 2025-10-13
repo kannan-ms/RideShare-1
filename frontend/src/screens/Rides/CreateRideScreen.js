@@ -202,7 +202,7 @@ const CreateRideScreen = ({ navigation }) => {
         [
           {
             text: 'View My Rides',
-            onPress: () => navigation.navigate('Rides'),
+            onPress: () => navigation.navigate('Tabs', { screen: 'Rides' }),
           },
           {
             text: 'Create Another',
