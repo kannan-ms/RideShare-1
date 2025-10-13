@@ -11,6 +11,7 @@ let _clipboardModule = null;
 const getClipboard = () => {
   if (_clipboardModule) return _clipboardModule;
   try {
+    //
     // runtime require is safer than a static import here
     // because static imports run during module evaluation and can fail
     // when native code is missing or incompatible.
