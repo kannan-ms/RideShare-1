@@ -2,6 +2,7 @@
 // Unified messages/requests view for riders and providers
 
 import React, { useContext, useEffect, useState } from 'react';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 // NOTE: Some native modules can cause the app to crash at load time if the
 // installed native version doesn't match the Expo Go client. To avoid that
 // bringing down the whole app during development, we require `expo-clipboard`
@@ -46,6 +47,7 @@ const StatusBadge = ({ status }) => {
 
 const MessagesScreen = () => {
   const { userToken, userRole } = useContext(AuthContext);
+  const navigation = useNavigation();
   const [requests, setRequests] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [rawResponse, setRawResponse] = useState(null);
@@ -83,6 +85,16 @@ const MessagesScreen = () => {
   useEffect(() => {
     loadRequests();
   }, [userRole]);
+
+  // Safety: close any open modals when leaving this screen to avoid overlays blocking touches
+  useFocusEffect(
+    React.useCallback(() => {
+      return () => {
+        setOtpModalVisible(false);
+        setPassengerOtpModalVisible(false);
+      };
+    }, [])
+  );
 
   // Polling: refresh provider requests periodically so UI reflects changes initiated by rider actions (e.g., OTP verified)
   useEffect(() => {
@@ -197,6 +209,19 @@ const MessagesScreen = () => {
               </TouchableOpacity>
             </View>
           ) : null}
+          {userRole === 'rider' && item.rideId ? (
+            <View style={{ marginTop: spacing.sm, alignItems: 'flex-end' }}>
+              <TouchableOpacity style={[styles.btn, styles.verify]} onPress={() => {
+                try {
+                  navigation.navigate('ProviderTrack', { rideId: item.rideId });
+                } catch (e) {
+                  console.log('Navigation error:', e?.message || e);
+                }
+              }}>
+                <Text style={styles.btnText}>Track Provider</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
         </View>
       );
     }
@@ -263,7 +288,22 @@ const MessagesScreen = () => {
             ) : null}
           </>
         ) : (
-          <Text style={styles.body}>Status updates will appear here.</Text>
+          <>
+            <Text style={styles.body}>Status updates will appear here.</Text>
+            {item.status === 'accepted' && item.rideId ? (
+              <View style={{ marginTop: spacing.sm, alignItems: 'flex-end' }}>
+                <TouchableOpacity style={[styles.btn, styles.verify]} onPress={() => {
+                  try {
+                    navigation.navigate('ProviderTrack', { rideId: item.rideId });
+                  } catch (e) {
+                    console.log('Navigation error:', e?.message || e);
+                  }
+                }}>
+                  <Text style={styles.btnText}>Track Provider</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+          </>
         )}
       </View>
     );

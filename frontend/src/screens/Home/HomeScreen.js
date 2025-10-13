@@ -73,6 +73,12 @@ const HomeScreen = ({ navigation }) => {
     setLoadingRoleUpdate(true);
     try {
       const data = await authApi.updateRole(newRole, userToken);
+      // If backend returns a fresh token after role update, store it and update context
+      if (data?.token) {
+        try {
+          await AsyncStorage.setItem('userToken', data.token);
+        } catch (e) {}
+      }
       setUserRole(data.newRole);
       
       // After successful role change, check if user has details

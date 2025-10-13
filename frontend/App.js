@@ -27,6 +27,7 @@ import RiderDetailsScreen from './src/screens/Home/RiderDetailsScreen';
 import RidesScreen from './src/screens/Rides/RidesScreen';
 import CreateRideScreen from './src/screens/Rides/CreateRideScreen';
 import MessagesScreen from './src/screens/Rides/MessagesScreen';
+import ProviderTrackScreen from './src/screens/Rides/ProviderTrackScreen';
 import ProfileScreen from './src/screens/Profile/ProfileScreen';
 
 // Create a stack navigator
@@ -94,6 +95,7 @@ const RootNavigator = () => {
           <Stack.Screen name="Tabs" component={AppTabs} />
           <Stack.Screen name="RiderDetails" component={RiderDetailsScreen} />
           <Stack.Screen name="ProviderDetails" component={ProviderDetailsScreen} />
+          <Stack.Screen name="ProviderTrack" component={ProviderTrackScreen} />
         </Stack.Navigator>
       ) : (
         <AuthStack />

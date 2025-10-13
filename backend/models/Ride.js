@@ -71,6 +71,10 @@ const RideSchema = new mongoose.Schema({
         latitude: { type: Number },
         longitude: { type: Number }
     },
+    liveTrackingEnabled: {
+        type: Boolean,
+        default: false
+    },
     womenOnly: {
         type: Boolean,
         default: false

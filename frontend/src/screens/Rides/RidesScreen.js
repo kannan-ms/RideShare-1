@@ -2,6 +2,7 @@
 // Screen to display available rides and ride management
 
 import React, { useState, useContext, useEffect } from 'react';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import {
   SafeAreaView,
   StyleSheet,
@@ -11,10 +12,12 @@ import {
   ScrollView,
   RefreshControl,
   Alert,
+  TextInput,
 } from 'react-native';
 import { AuthContext } from '../../context/AuthContext';
 import { rideApi, providerApi, riderApi, ocrApi, getFormattedAddress } from '../../utils/api';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import { colors, spacing, borderRadius, typography, shadow } from '../../styles/theme';
 
 const RidesScreen = ({ navigation }) => {
@@ -28,6 +31,10 @@ const RidesScreen = ({ navigation }) => {
   const [extractedAadhaar, setExtractedAadhaar] = useState('');
   const [mediaLibraryPermission, setMediaLibraryPermission] = useState(null);
   const [aadhaarInfo, setAadhaarInfo] = useState({ name: '', dob: '', gender: '' });
+  const [searchStart, setSearchStart] = useState('');
+  const [searchEnd, setSearchEnd] = useState('');
+  const [showActions, setShowActions] = useState(false);
+  const [liveTrackingRideIds, setLiveTrackingRideIds] = useState({}); // rideId -> intervalId
 
   useEffect(() => {
     loadRides();
@@ -43,6 +50,18 @@ const RidesScreen = ({ navigation }) => {
     };
     requestPerms();
   }, [userRole]);
+
+  // Clear search filters and refresh when returning to this screen
+  useFocusEffect(
+    React.useCallback(() => {
+      setSearchStart('');
+      setSearchEnd('');
+      setShowActions(false);
+      // Refresh list to show all rides again
+      loadRides();
+      return () => {};
+    }, [userRole])
+  );
 
   const loadProviderDetails = async () => {
     try {
@@ -66,6 +85,22 @@ const RidesScreen = ({ navigation }) => {
         // Show available rides to all users (including those without rider details)
         const response = await rideApi.getAvailableRides(userToken);
         fetchedRides = response.rides || [];
+        
+        // For riders, check if they have any accepted bookings for these rides
+        try {
+          const riderRequests = await rideApi.getRiderRequests(userToken);
+          const acceptedRideIds = (riderRequests.requests || [])
+            .filter(req => req.status === 'accepted')
+            .map(req => req.rideId);
+          
+          // Add booking status to rides
+          fetchedRides = fetchedRides.map(ride => ({
+            ...ride,
+            userBookingStatus: acceptedRideIds.includes(ride._id || ride.id) ? 'accepted' : null
+          }));
+        } catch (error) {
+          console.log('Could not fetch rider requests:', error);
+        }
       }
 
       // Replace coordinates with formatted addresses
@@ -81,7 +116,16 @@ const RidesScreen = ({ navigation }) => {
         })
       );
 
-      setRides(updatedRides);
+      // Sort: newest posted first (createdAt desc), fallback to startTime desc
+      const sorted = [...updatedRides].sort((a, b) => {
+        const aCreated = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bCreated = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+        if (aCreated !== 0 || bCreated !== 0) return bCreated - aCreated;
+        const aStart = a.startTime ? new Date(a.startTime).getTime() : 0;
+        const bStart = b.startTime ? new Date(b.startTime).getTime() : 0;
+        return bStart - aStart;
+      });
+      setRides(sorted);
     } catch (error) {
       console.error('Load rides error:', error);
       // Fallback to mock data if API fails
@@ -383,18 +427,74 @@ const RidesScreen = ({ navigation }) => {
               >
                 <Text style={styles.actionButtonText}>View Provider Details</Text>
               </TouchableOpacity>
+              {/* Track button for accepted rides - will be shown when rider has accepted booking */}
+              {ride.userBookingStatus === 'accepted' && (
+                <TouchableOpacity
+                  style={[styles.actionButton, styles.trackButton]}
+                  onPress={() => navigation.navigate('ProviderTrack', { rideId: ride._id || ride.id })}
+                >
+                  <Text style={styles.actionButtonText}>Track Provider</Text>
+                </TouchableOpacity>
+              )}
             </>
           ) : (
-            <TouchableOpacity
-              style={[styles.actionButton, styles.manageButton]}
-              onPress={() => handleRideAction(ride, 'manage')}
-            >
-              <Text style={styles.actionButtonText}>Manage Ride</Text>
-            </TouchableOpacity>
+            <>
+              <TouchableOpacity
+                style={[styles.actionButton, styles.manageButton]}
+                onPress={() => handleRideAction(ride, 'manage')}
+              >
+                <Text style={styles.actionButtonText}>Manage Ride</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionButton, liveTrackingRideIds[ride._id || ride.id] ? styles.bookButton : styles.manageButton]}
+                onPress={() => toggleLiveTracking(ride)}
+              >
+                <Text style={styles.actionButtonText}>
+                  {liveTrackingRideIds[ride._id || ride.id] ? 'Disable Tracking' : 'Enable Tracking'}
+                </Text>
+              </TouchableOpacity>
+            </>
           )}
         </View>
       </View>
     );
+  };
+
+  const toggleLiveTracking = async (ride) => {
+    const rideId = ride._id || ride.id;
+    try {
+      if (liveTrackingRideIds[rideId]) {
+        // disable
+        clearInterval(liveTrackingRideIds[rideId]);
+        setLiveTrackingRideIds((prev) => ({ ...prev, [rideId]: undefined }));
+        await rideApi.setLiveTracking(rideId, false, userToken);
+        return;
+      }
+      // enable
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission required', 'Location permission is required to enable live tracking.');
+        return;
+      }
+      await rideApi.setLiveTracking(rideId, true, userToken);
+      // push immediately once
+      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      if (pos?.coords) {
+        await rideApi.updateLiveLocation(rideId, pos.coords.latitude, pos.coords.longitude, userToken);
+      }
+      // then every 15 seconds
+      const intId = setInterval(async () => {
+        try {
+          const p = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          if (p?.coords) {
+            await rideApi.updateLiveLocation(rideId, p.coords.latitude, p.coords.longitude, userToken);
+          }
+        } catch (_) {}
+      }, 15000);
+      setLiveTrackingRideIds((prev) => ({ ...prev, [rideId]: intId }));
+    } catch (e) {
+      Alert.alert('Error', e?.message || 'Failed to toggle live tracking');
+    }
   };
 
   return (
@@ -411,69 +511,51 @@ const RidesScreen = ({ navigation }) => {
         </Text>
       </View>
 
-      {/* Profile Management Section */}
-      <View style={styles.profileSection}>
-        <Text style={styles.profileSectionTitle}>Profile Management</Text>
-        <View style={styles.profileButtons}>
-          <TouchableOpacity
-            style={styles.profileButton}
-            onPress={() => {
-              if (userRole === 'rider') {
-                navigation.navigate('RiderDetails');
-              } else {
-                navigation.navigate('ProviderDetails');
+      {/* Compact Filters */}
+      <View style={styles.searchSection}>
+        <View style={styles.searchRow}>
+          <TextInput
+            style={[styles.searchInput, { flex: 1, marginRight: spacing.xs }]}
+            placeholder="Start"
+            placeholderTextColor={colors.textSecondary}
+            value={searchStart}
+            onChangeText={setSearchStart}
+          />
+          <TextInput
+            style={[styles.searchInput, { flex: 1, marginLeft: spacing.xs }]}
+            placeholder="Destination"
+            placeholderTextColor={colors.textSecondary}
+            value={searchEnd}
+            onChangeText={setSearchEnd}
+          />
+          <TouchableOpacity style={styles.searchIconBtn} onPress={async () => {
+            if (searchStart && searchEnd && userRole !== 'provider') {
+              try {
+                setLoading(true);
+                const res = await rideApi.searchRides(searchStart, searchEnd, userToken);
+                const list = res?.rides || [];
+                const updated = await Promise.all(list.map(async (ride) => {
+                  const startAddress = await getFormattedAddress(ride.startPoint);
+                  const destAddress = await getFormattedAddress(ride.destination);
+                  return { ...ride, startPoint: startAddress || ride.startPoint, destination: destAddress || ride.destination };
+                }));
+                setRides(updated);
+              } catch (e) {
+                // fallback to regular refresh
+                await onRefresh();
+              } finally {
+                setLoading(false);
               }
-            }}
-          >
-            <Text style={styles.profileButtonText}>
-              {userRole === 'rider' ? 'Update Rider Details' : 'Update Vehicle Details'}
-            </Text>
-          </TouchableOpacity>
-          
-
-          {userRole === 'rider' && (
-            <TouchableOpacity
-              style={styles.profileButton}
-              onPress={uploadAadhaarForBooking}
-            >
-              <Text style={styles.profileButtonText}>Upload Aadhaar for Booking</Text>
-            </TouchableOpacity>
-          )}
-
-          {userRole === 'rider' && (extractedAadhaar || aadhaarInfo.name || aadhaarInfo.dob || aadhaarInfo.gender) ? (
-            <View style={{ alignItems: 'center', marginBottom: spacing.sm }}>
-              {extractedAadhaar ? (
-                <Text style={{ ...typography.body, color: colors.textSecondary }}>Extracted Aadhaar: {extractedAadhaar}</Text>
-              ) : null}
-              {aadhaarInfo.name ? (
-                <Text style={{ ...typography.body, color: colors.textSecondary }}>Name: {aadhaarInfo.name}</Text>
-              ) : null}
-              {aadhaarInfo.dob ? (
-                <Text style={{ ...typography.body, color: colors.textSecondary }}>DOB/YOB: {aadhaarInfo.dob}</Text>
-              ) : null}
-              {aadhaarInfo.gender ? (
-                <Text style={{ ...typography.body, color: colors.textSecondary }}>Gender: {aadhaarInfo.gender}</Text>
-              ) : null}
-            </View>
-          ) : null}
-          
-          {userRole === 'provider' && (
-            <TouchableOpacity
-              style={[styles.profileButton, styles.createRideButton]}
-              onPress={handleCreateRide}
-            >
-              <Text style={styles.profileButtonText}>Create New Ride</Text>
-            </TouchableOpacity>
-          )}
-          
-          <TouchableOpacity
-            style={styles.profileButton}
-            onPress={() => navigation.navigate('Home')}
-          >
-            <Text style={styles.profileButtonText}>Back to Home</Text>
+            } else {
+              await onRefresh();
+            }
+          }}>
+            <Text style={styles.searchIconText}>Go</Text>
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Rides List */}
 
       <ScrollView
         style={styles.content}
@@ -486,7 +568,11 @@ const RidesScreen = ({ navigation }) => {
             <Text style={styles.loadingText}>Loading rides...</Text>
           </View>
         ) : rides.length > 0 ? (
-          rides.map(renderRideCard)
+          (rides.filter(r => {
+            const okStart = !searchStart || (r.startPoint || '').toLowerCase().includes(searchStart.toLowerCase());
+            const okEnd = !searchEnd || (r.destination || '').toLowerCase().includes(searchEnd.toLowerCase());
+            return okStart && okEnd;
+          })).map(renderRideCard)
         ) : (
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyText}>No rides available at the moment.</Text>
@@ -495,14 +581,41 @@ const RidesScreen = ({ navigation }) => {
         )}
       </ScrollView>
 
+      {/* Quick Actions (collapsed) */}
       <View style={styles.footer}>
-        <TouchableOpacity
-          style={styles.refreshButton}
-          onPress={onRefresh}
-          disabled={loading}
-        >
-          <Text style={styles.refreshButtonText}>Refresh Rides</Text>
+        <TouchableOpacity style={styles.filtersPill} onPress={() => setShowActions(v => !v)}>
+          <Text style={styles.filtersPillText}>{showActions ? 'Hide Quick Actions' : 'Show Quick Actions'}</Text>
         </TouchableOpacity>
+        {showActions && (
+          <View style={[styles.profileSection, { marginTop: spacing.sm }] }>
+            <View style={styles.profileButtons}>
+              <TouchableOpacity
+                style={styles.profileButton}
+                onPress={() => {
+                  if (userRole === 'rider') {
+                    navigation.navigate('RiderDetails');
+                  } else {
+                    navigation.navigate('ProviderDetails');
+                  }
+                }}
+              >
+                <Text style={styles.profileButtonText}>
+                  {userRole === 'rider' ? 'Update Rider Details' : 'Update Vehicle Details'}
+                </Text>
+              </TouchableOpacity>
+              {userRole === 'rider' && (
+                <TouchableOpacity style={styles.profileButton} onPress={uploadAadhaarForBooking}>
+                  <Text style={styles.profileButtonText}>Upload Aadhaar for Booking</Text>
+                </TouchableOpacity>
+              )}
+              {userRole === 'provider' && (
+                <TouchableOpacity style={[styles.profileButton, styles.createRideButton]} onPress={handleCreateRide}>
+                  <Text style={styles.profileButtonText}>Create New Ride</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -532,6 +645,30 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: spacing.md,
   },
+  searchSection: {
+    backgroundColor: colors.cardBackground,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.md,
+    marginHorizontal: spacing.md,
+    marginTop: spacing.md,
+    ...shadow.default,
+  },
+  searchRow: { flexDirection: 'row', alignItems: 'center' },
+  searchInput: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.sm,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    ...typography.body,
+    color: colors.textPrimary,
+  },
+  searchIconBtn: { marginLeft: spacing.sm, backgroundColor: colors.primary, paddingVertical: spacing.sm, paddingHorizontal: spacing.md, borderRadius: borderRadius.sm, ...shadow.button },
+  searchIconText: { ...typography.h4, color: colors.cardBackground, fontWeight: 'bold' },
+  filtersBar: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.md, paddingTop: spacing.sm },
+  filtersPill: { backgroundColor: colors.primaryLight, paddingVertical: spacing.sm, paddingHorizontal: spacing.md, borderRadius: 999, ...shadow.button },
+  filtersPillText: { ...typography.body, color: colors.textPrimary, fontWeight: '600' },
   rideCard: {
     backgroundColor: colors.cardBackground,
     borderRadius: borderRadius.lg,
@@ -588,6 +725,9 @@ const styles = StyleSheet.create({
   },
   manageButton: {
     backgroundColor: colors.primary,
+  },
+  trackButton: {
+    backgroundColor: '#4CAF50', // Green color for tracking
   },
   actionButtonText: {
     color: colors.cardBackground,

@@ -11,7 +11,7 @@ import { GOOGLE_MAPS_API_KEY } from '../config/googleMapsConfig';
 // - For iOS Simulator/Device: 'http://localhost:5000/api' (or your local IP)
 // - For Web (if you ever build a web version with Expo): 'http://localhost:5000/api'
 
-const API_BASE_URL = 'http://192.168.29.117:5000/api'; // Default for Android Emulator
+const API_BASE_URL = 'http://10.249.121.205:5000/api'; // Default for Android Emulator
 
 // Generic function to make API calls
 export const apiCall = async (endpoint, method = 'GET', data = null, token = null) => {
@@ -121,6 +121,12 @@ export const rideApi = {
   getProviderRides: (token) => apiCall('/provider/rides', 'GET', null, token),
   bookRide: (rideId, token) => apiCall(`/rides/book/${rideId}`, 'POST', null, token),
   deleteRide: (rideId, token) => apiCall(`/provider/rides/${rideId}`, 'DELETE', null, token),
+  searchRides: (startPoint, destination, token) => apiCall(`/rides/search?startPoint=${encodeURIComponent(startPoint)}&destination=${encodeURIComponent(destination)}`, 'GET', null, token),
+  getRiderRequests: (token) => apiCall('/rider/requests', 'GET', null, token),
+  // Live tracking
+  setLiveTracking: (rideId, enabled, token) => apiCall(`/provider/rides/${rideId}/live-tracking`, 'POST', { enabled }, token),
+  updateLiveLocation: (rideId, latitude, longitude, token) => apiCall(`/provider/rides/${rideId}/live-location`, 'POST', { latitude, longitude }, token),
+  getProviderLocation: (rideId, token) => apiCall(`/rides/${rideId}/provider-location`, 'GET', null, token),
 };
 
 // OCR API
@@ -142,6 +148,7 @@ export const requestsApi = {
 export const otpApi = {
   verifyOtp: (rideId, passengerId, otp, token) => apiCall('/otp/verify', 'POST', { rideId, passengerId, otp }, token),
 };
+
 
 // --- Google Maps Helpers ---
 // Reverse geocode coordinates to a human-readable address

@@ -222,7 +222,15 @@ app.put('/api/auth/role', auth, async (req, res) => {
         }
         user.role = role;
         await user.save();
-        res.json({ message: `Role updated to ${role}`, newRole: user.role });
+        // Issue a fresh token reflecting the updated role to avoid stale client state
+        const payload = { user: { id: user.id, role: user.role } };
+        jwt.sign(payload, JWT_SECRET, { expiresIn: '24h' }, (err, token) => {
+            if (err) {
+                console.error('JWT sign error (role update):', err.message);
+                return res.status(500).json({ message: 'Token refresh failed after role update.' });
+            }
+            res.json({ message: `Role updated to ${role}`, newRole: user.role, token });
+        });
     } catch (err) {
         console.error('Update role error:', err.message);
         res.status(500).json({ message: 'Server error updating role.' });
@@ -411,6 +419,18 @@ app.post('/api/rides/create', auth, async (req, res) => {
         return res.status(400).json({ message: 'Start point, destination, start time, and ride cost are required.' });
     }
     try {
+        const start = new Date(startTime);
+        if (isNaN(start.getTime())) {
+            return res.status(400).json({ message: 'Invalid start time.' });
+        }
+        const end = endTime ? new Date(endTime) : undefined;
+        if (endTime && (isNaN(end.getTime()) || end <= start)) {
+            return res.status(400).json({ message: 'End time must be after start time.' });
+        }
+        const minStart = new Date(Date.now() + 40 * 60 * 1000);
+        if (start < minStart) {
+            return res.status(400).json({ message: 'Start time must be at least 40 minutes in the future.' });
+        }
         const providerDetails = await ProviderDetails.findOne({ user: req.user.id });
         if (!providerDetails) {
             return res.status(400).json({ message: 'Please complete your provider details before creating a ride.' });
@@ -421,8 +441,8 @@ app.post('/api/rides/create', auth, async (req, res) => {
             startPoint,
             destination,
             breakLocations,
-            startTime,
-            endTime,
+            startTime: start,
+            endTime: end,
             rideCost,
             womenOnly,
             seats: Math.max(1, Math.min(6, Number(seats) || 1))
@@ -452,14 +472,26 @@ app.post('/api/ride', auth, async (req, res) => {
         if (!providerDetails) {
             return res.status(400).json({ message: 'Please complete your provider details before creating a ride.' });
         }
+        const start = new Date(startTime);
+        if (isNaN(start.getTime())) {
+            return res.status(400).json({ message: 'Invalid start time.' });
+        }
+        const end = endTime ? new Date(endTime) : undefined;
+        if (endTime && (isNaN(end.getTime()) || end <= start)) {
+            return res.status(400).json({ message: 'End time must be after start time.' });
+        }
+        const minStart = new Date(Date.now() + 40 * 60 * 1000);
+        if (start < minStart) {
+            return res.status(400).json({ message: 'Start time must be at least 40 minutes in the future.' });
+        }
         const newRide = new Ride({
             provider: req.user.id,
             vehicleCategory: vehicleCategory || providerDetails.vehicleCategory,
             startPoint,
             destination,
             breakLocations: breakLocations || [],
-            startTime: new Date(startTime),
-            endTime: endTime ? new Date(endTime) : undefined,
+            startTime: start,
+            endTime: end,
             rideCost: parseFloat(rideCost),
             womenOnly: womenOnly || false,
             seats: Math.max(1, Math.min(6, Number(seats) || 1))
@@ -847,6 +879,71 @@ app.get('/api/rider/notifications', auth, async (req, res) => {
     }
 });
 
+// --- Live Tracking ---
+// Provider toggles live tracking for a ride
+app.post('/api/provider/rides/:rideId/live-tracking', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'provider') return res.status(403).json({ message: 'Only providers can update tracking.' });
+        const { rideId } = req.params;
+        const { enabled } = req.body || {};
+        const ride = await Ride.findById(rideId);
+        if (!ride) return res.status(404).json({ message: 'Ride not found.' });
+        if (ride.provider.toString() !== req.user.id) return res.status(403).json({ message: 'Not authorized for this ride.' });
+        ride.liveTrackingEnabled = !!enabled;
+        await ride.save();
+        res.json({ message: 'Live tracking updated', liveTrackingEnabled: ride.liveTrackingEnabled });
+    } catch (e) {
+        console.error('Update live tracking error:', e?.message || e);
+        res.status(500).json({ message: 'Server error updating live tracking.' });
+    }
+});
+
+// Provider updates live location (lat/lng). When enabled, riders can fetch it if within 30 minutes before start
+app.post('/api/provider/rides/:rideId/live-location', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'provider') return res.status(403).json({ message: 'Only providers can update location.' });
+        const { rideId } = req.params;
+        const { latitude, longitude } = req.body || {};
+        if (typeof latitude !== 'number' || typeof longitude !== 'number') return res.status(400).json({ message: 'latitude and longitude must be numbers.' });
+        const ride = await Ride.findById(rideId);
+        if (!ride) return res.status(404).json({ message: 'Ride not found.' });
+        if (ride.provider.toString() !== req.user.id) return res.status(403).json({ message: 'Not authorized for this ride.' });
+        ride.liveLocation = { latitude, longitude };
+        await ride.save();
+        res.json({ message: 'Live location updated' });
+    } catch (e) {
+        console.error('Update live location error:', e?.message || e);
+        res.status(500).json({ message: 'Server error updating live location.' });
+    }
+});
+
+// Rider fetches provider live location within 30 minutes before start, only if accepted in riders list and tracking enabled
+app.get('/api/rides/:rideId/provider-location', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'rider') return res.status(403).json({ message: 'Only riders can view provider location.' });
+        const { rideId } = req.params;
+        const ride = await Ride.findById(rideId);
+        if (!ride) return res.status(404).json({ message: 'Ride not found.' });
+        const isAccepted = ride.riders.some(r => r.user.toString() === req.user.id && r.status === 'accepted');
+        if (!isAccepted) return res.status(403).json({ message: 'You are not accepted for this ride.' });
+        const now = new Date();
+        const start = new Date(ride.startTime);
+        const diffMs = start.getTime() - now.getTime();
+        const within30Min = diffMs <= 30 * 60 * 1000 && diffMs >= -6 * 60 * 60 * 1000; // allow until 6 hours after start
+        if (!within30Min) return res.status(403).json({ message: 'Live tracking available only within 30 minutes before start.' });
+        if (!ride.liveTrackingEnabled) return res.status(403).json({ message: 'Provider has not enabled live tracking.' });
+        if (!ride.liveLocation || typeof ride.liveLocation.latitude !== 'number' || typeof ride.liveLocation.longitude !== 'number') {
+            return res.status(404).json({ message: 'Live location not available.' });
+        }
+        res.json({ latitude: ride.liveLocation.latitude, longitude: ride.liveLocation.longitude });
+    } catch (e) {
+        console.error('Fetch provider location error:', e?.message || e);
+        res.status(500).json({ message: 'Server error fetching provider location.' });
+    }
+});
 // Rider: list own requests with statuses
 app.get('/api/rider/requests', auth, async (req, res) => {
     try {
@@ -882,8 +979,8 @@ app.get('/api/rider/requests', auth, async (req, res) => {
 // Start the server only when this file is run directly. Export `app` for tests.
 // Start the server only when run directly. This lets tests require the app without starting the listener.
 if (require.main === module) {
-    const HOST = '0.0.0.0';
-    app.listen(PORT, HOST, () => console.log(`Server running on http://${HOST}:${PORT}`));
+const HOST = '0.0.0.0';
+app.listen(PORT, HOST, () => console.log(`Server running on http://${HOST}:${PORT}`));
 }
 
 module.exports = app;
