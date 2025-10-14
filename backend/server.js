@@ -900,11 +900,11 @@ app.post('/api/provider/notify/:rideId', auth, async (req, res) => {
         }
         const recipients = ride.riders.filter(r => r.status === 'accepted').map(r => r.user._id);
         if (toAllAccepted && recipients.length > 0) {
-            ride.notifications.push({ message, toRiderIds: recipients });
+            ride.notifications.push({ message, fromUserId: req.user.id, toRiderIds: recipients });
             await ride.save();
         } else {
             // If no accepted riders yet, store a general notification
-            ride.notifications.push({ message, toRiderIds: [] });
+            ride.notifications.push({ message, fromUserId: req.user.id, toRiderIds: [] });
             await ride.save();
         }
         res.json({ message: 'Notification sent', recipients: recipients.map(id => id.toString()) });
@@ -1186,11 +1186,18 @@ app.get('/api/rider/requests', auth, async (req, res) => {
         }
         const rides = await Ride.find({ 'riders.user': req.user.id })
             .populate('provider', 'name mobileNumber')
+            .populate('notifications.fromUserId', 'name')
             .sort({ createdAt: -1 });
         const requests = [];
         rides.forEach(ride => {
             ride.riders.forEach(r => {
                 if (r.user.toString() === req.user.id) {
+                    // Filter notifications for this rider (not deleted and relevant to this rider)
+                    const relevantNotifications = ride.notifications.filter(notif => 
+                        !notif.isDeleted && 
+                        (notif.toRiderIds.includes(req.user.id) || notif.fromUserId.toString() === req.user.id)
+                    );
+                    
                     requests.push({
                         rideId: ride.id,
                         startPoint: ride.startPoint,
@@ -1201,7 +1208,15 @@ app.get('/api/rider/requests', auth, async (req, res) => {
                         otp: r.otp || null, // Include OTP if available
                         averageSpeed: r.averageSpeed || null, // Include average speed if available
                         rideStartTime: r.rideStartTime || null,
-                        rideEndTime: r.rideEndTime || null
+                        rideEndTime: r.rideEndTime || null,
+                        notifications: relevantNotifications.map(notif => ({
+                            id: notif._id,
+                            message: notif.message,
+                            fromUserId: notif.fromUserId,
+                            fromUserName: notif.fromUserId?.name,
+                            createdAt: notif.createdAt,
+                            type: notif.type || null
+                        }))
                     });
                 }
             });
@@ -1210,6 +1225,351 @@ app.get('/api/rider/requests', auth, async (req, res) => {
     } catch (err) {
         console.error('Rider requests error:', err.message);
         res.status(500).json({ message: 'Server error fetching rider requests.' });
+    }
+});
+
+// Rider: reply to provider
+app.post('/api/rider/reply/:rideId', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'rider') {
+            return res.status(403).json({ message: 'Only riders can send replies.' });
+        }
+        
+        const { message } = req.body;
+        if (!message || !message.trim()) {
+            return res.status(400).json({ message: 'Message is required.' });
+        }
+        
+        const ride = await Ride.findById(req.params.rideId);
+        if (!ride) {
+            return res.status(404).json({ message: 'Ride not found.' });
+        }
+        
+        // Check if rider is accepted for this ride
+        const riderEntry = ride.riders.find(r => r.user.toString() === req.user.id && r.status === 'accepted');
+        if (!riderEntry) {
+            return res.status(403).json({ message: 'You are not accepted for this ride.' });
+        }
+        
+        // Send reply to provider only
+        ride.notifications.push({ 
+            message: message.trim(),
+            fromUserId: req.user.id,
+            toRiderIds: [ride.provider] // Send to provider
+        });
+        
+        await ride.save();
+        res.json({ message: 'Reply sent successfully.' });
+    } catch (err) {
+        console.error('Rider reply error:', err.message);
+        res.status(500).json({ message: 'Server error sending reply.' });
+    }
+});
+
+// Delete single message (both rider and provider)
+app.delete('/api/messages/:rideId/:messageId', auth, async (req, res) => {
+    try {
+        const { rideId, messageId } = req.params;
+        const ride = await Ride.findById(rideId);
+        
+        if (!ride) {
+            return res.status(404).json({ message: 'Ride not found.' });
+        }
+        
+        // Check if user is either the provider or an accepted rider
+        const isProvider = ride.provider.toString() === req.user.id;
+        const isAcceptedRider = ride.riders.some(r => r.user.toString() === req.user.id && r.status === 'accepted');
+        
+        if (!isProvider && !isAcceptedRider) {
+            return res.status(403).json({ message: 'You are not authorized to delete messages for this ride.' });
+        }
+        
+        // Find and mark message as deleted
+        const message = ride.notifications.id(messageId);
+        if (!message) {
+            return res.status(404).json({ message: 'Message not found.' });
+        }
+        
+        // Check if user can delete this message (either sender or recipient)
+        const isSender = message.fromUserId && message.fromUserId.toString() === req.user.id;
+        const isRecipient = message.toRiderIds.some(id => id.toString() === req.user.id) || 
+                           (isProvider && message.toRiderIds.length > 0);
+        
+        if (!isSender && !isRecipient) {
+            return res.status(403).json({ message: 'You are not authorized to delete this message.' });
+        }
+        
+        message.isDeleted = true;
+        await ride.save();
+        
+        res.json({ message: 'Message deleted successfully.' });
+    } catch (err) {
+        console.error('Delete message error:', err.message);
+        res.status(500).json({ message: 'Server error deleting message.' });
+    }
+});
+
+// Delete multiple messages (bulk delete)
+app.delete('/api/messages/:rideId', auth, async (req, res) => {
+    try {
+        const { rideId } = req.params;
+        const { messageIds } = req.body;
+        
+        if (!messageIds || !Array.isArray(messageIds) || messageIds.length === 0) {
+            return res.status(400).json({ message: 'Message IDs array is required.' });
+        }
+        
+        const ride = await Ride.findById(rideId);
+        if (!ride) {
+            return res.status(404).json({ message: 'Ride not found.' });
+        }
+        
+        // Check if user is either the provider or an accepted rider
+        const isProvider = ride.provider.toString() === req.user.id;
+        const isAcceptedRider = ride.riders.some(r => r.user.toString() === req.user.id && r.status === 'accepted');
+        
+        if (!isProvider && !isAcceptedRider) {
+            return res.status(403).json({ message: 'You are not authorized to delete messages for this ride.' });
+        }
+        
+        let deletedCount = 0;
+        
+        // Mark each message as deleted
+        messageIds.forEach(messageId => {
+            const message = ride.notifications.id(messageId);
+            if (message) {
+                // Check if user can delete this message
+                const isSender = message.fromUserId && message.fromUserId.toString() === req.user.id;
+                const isRecipient = message.toRiderIds.some(id => id.toString() === req.user.id) || 
+                                   (isProvider && message.toRiderIds.length > 0);
+                
+                if (isSender || isRecipient) {
+                    message.isDeleted = true;
+                    deletedCount++;
+                }
+            }
+        });
+        
+        await ride.save();
+        
+        res.json({ 
+            message: `${deletedCount} message(s) deleted successfully.`,
+            deletedCount 
+        });
+    } catch (err) {
+        console.error('Bulk delete messages error:', err.message);
+        res.status(500).json({ message: 'Server error deleting messages.' });
+    }
+});
+
+// Provider: End ride (request rider confirmation)
+app.post('/api/provider/end-ride/:rideId', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'provider') {
+            return res.status(403).json({ message: 'Only providers can end rides.' });
+        }
+        
+        const { rideId } = req.params;
+        const ride = await Ride.findById(rideId);
+        if (!ride) {
+            return res.status(404).json({ message: 'Ride not found.' });
+        }
+        
+        if (ride.provider.toString() !== req.user.id) {
+            return res.status(403).json({ message: 'You can only end your own rides.' });
+        }
+        
+        // Check if ride is currently active
+        const activeRiders = ride.riders.filter(r => r.status === 'in-ride');
+        if (activeRiders.length === 0) {
+            return res.status(400).json({ message: 'No active riders found for this ride.' });
+        }
+        
+        // Send notification to all active riders requesting confirmation
+        const message = 'Provider has requested to end the ride. Please confirm to complete the ride.';
+        ride.notifications.push({ 
+            message, 
+            fromUserId: req.user.id, 
+            toRiderIds: activeRiders.map(r => r.user),
+            type: 'ride_end_request'
+        });
+        
+        await ride.save();
+        res.json({ message: 'Ride end request sent to all active riders.' });
+    } catch (err) {
+        console.error('End ride request error:', err.message);
+        res.status(500).json({ message: 'Server error ending ride.' });
+    }
+});
+
+// Rider: Confirm ride end
+app.post('/api/rider/confirm-ride-end/:rideId', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'rider') {
+            return res.status(403).json({ message: 'Only riders can confirm ride end.' });
+        }
+        
+        const { rideId } = req.params;
+        const ride = await Ride.findById(rideId);
+        if (!ride) {
+            return res.status(404).json({ message: 'Ride not found.' });
+        }
+        
+        const riderEntry = ride.riders.find(r => r.user.toString() === req.user.id && r.status === 'in-ride');
+        if (!riderEntry) {
+            return res.status(403).json({ message: 'You are not in an active ride.' });
+        }
+        
+        // Calculate average speed for this rider
+        const speedReadings = riderEntry.speedReadings;
+        let averageSpeed = 0;
+        if (speedReadings.length > 0) {
+            const totalSpeed = speedReadings.reduce((sum, reading) => sum + reading.speed, 0);
+            averageSpeed = totalSpeed / speedReadings.length;
+        }
+        
+        // Update rider status and end time
+        riderEntry.status = 'completed';
+        riderEntry.rideEndTime = new Date();
+        riderEntry.averageSpeed = Math.round(averageSpeed * 100) / 100;
+        
+        // Remove the ride end request notification
+        ride.notifications = ride.notifications.filter(notif => notif.type !== 'ride_end_request');
+        
+        await ride.save();
+        
+        res.json({ 
+            message: 'Ride completed successfully', 
+            averageSpeed: riderEntry.averageSpeed,
+            totalReadings: speedReadings.length,
+            rideDuration: riderEntry.rideEndTime - riderEntry.rideStartTime
+        });
+    } catch (err) {
+        console.error('Confirm ride end error:', err.message);
+        res.status(500).json({ message: 'Server error confirming ride end.' });
+    }
+});
+
+// Rider: Reject ride end
+app.post('/api/rider/reject-ride-end/:rideId', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'rider') {
+            return res.status(403).json({ message: 'Only riders can reject ride end.' });
+        }
+        
+        const { rideId } = req.params;
+        const ride = await Ride.findById(rideId);
+        if (!ride) {
+            return res.status(404).json({ message: 'Ride not found.' });
+        }
+        
+        const riderEntry = ride.riders.find(r => r.user.toString() === req.user.id && r.status === 'in-ride');
+        if (!riderEntry) {
+            return res.status(403).json({ message: 'You are not in an active ride.' });
+        }
+        
+        // Remove the ride end request notification
+        ride.notifications = ride.notifications.filter(notif => notif.type !== 'ride_end_request');
+        
+        // Send notification to provider that rider rejected the end request
+        const rejectionMessage = 'Rider has rejected the ride end request. Ride continues.';
+        ride.notifications.push({ 
+            message: rejectionMessage, 
+            fromUserId: req.user.id, 
+            toRiderIds: [ride.provider],
+            type: 'ride_end_rejected'
+        });
+        
+        await ride.save();
+        
+        res.json({ message: 'Ride end request rejected successfully.' });
+    } catch (err) {
+        console.error('Reject ride end error:', err.message);
+        res.status(500).json({ message: 'Server error rejecting ride end.' });
+    }
+});
+
+// Rider: Report ride
+app.post('/api/rider/report/:rideId', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'rider') {
+            return res.status(403).json({ message: 'Only riders can report rides.' });
+        }
+        
+        const { rideId } = req.params;
+        const { reportText } = req.body;
+        
+        if (!reportText || !reportText.trim()) {
+            return res.status(400).json({ message: 'Report text is required.' });
+        }
+        
+        const ride = await Ride.findById(rideId);
+        if (!ride) {
+            return res.status(404).json({ message: 'Ride not found.' });
+        }
+        
+        const riderEntry = ride.riders.find(r => r.user.toString() === req.user.id);
+        if (!riderEntry) {
+            return res.status(403).json({ message: 'You are not part of this ride.' });
+        }
+        
+        // Add report to rider entry
+        if (!riderEntry.reports) {
+            riderEntry.reports = [];
+        }
+        
+        riderEntry.reports.push({
+            reportText: reportText.trim(),
+            reportedAt: new Date()
+        });
+        
+        await ride.save();
+        res.json({ message: 'Report submitted successfully.' });
+    } catch (err) {
+        console.error('Report ride error:', err.message);
+        res.status(500).json({ message: 'Server error submitting report.' });
+    }
+});
+
+// Rider: Rate ride
+app.post('/api/rider/rate/:rideId', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'rider') {
+            return res.status(403).json({ message: 'Only riders can rate rides.' });
+        }
+        
+        const { rideId } = req.params;
+        const { rating } = req.body;
+        
+        if (!rating || rating < 1 || rating > 5) {
+            return res.status(400).json({ message: 'Rating must be between 1 and 5.' });
+        }
+        
+        const ride = await Ride.findById(rideId);
+        if (!ride) {
+            return res.status(404).json({ message: 'Ride not found.' });
+        }
+        
+        const riderEntry = ride.riders.find(r => r.user.toString() === req.user.id);
+        if (!riderEntry) {
+            return res.status(403).json({ message: 'You are not part of this ride.' });
+        }
+        
+        // Add rating to rider entry
+        riderEntry.rating = rating;
+        riderEntry.ratedAt = new Date();
+        
+        await ride.save();
+        res.json({ message: 'Rating submitted successfully.' });
+    } catch (err) {
+        console.error('Rate ride error:', err.message);
+        res.status(500).json({ message: 'Server error submitting rating.' });
     }
 });
 

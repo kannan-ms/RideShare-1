@@ -64,12 +64,21 @@ const RideSchema = new mongoose.Schema({
         }],
         averageSpeed: { type: Number, default: 0 }, // km/h
         rideStartTime: { type: Date },
-        rideEndTime: { type: Date }
+        rideEndTime: { type: Date },
+        reports: [{
+            reportText: { type: String },
+            reportedAt: { type: Date, default: Date.now }
+        }],
+        rating: { type: Number, min: 1, max: 5 },
+        ratedAt: { type: Date }
     }],
     notifications: [{
         message: { type: String, required: true },
+        fromUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         toRiderIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-        createdAt: { type: Date, default: Date.now }
+        createdAt: { type: Date, default: Date.now },
+        isDeleted: { type: Boolean, default: false },
+        type: { type: String, default: null } // For special notification types like 'ride_end_request'
     }],
     status: {
         type: String,
