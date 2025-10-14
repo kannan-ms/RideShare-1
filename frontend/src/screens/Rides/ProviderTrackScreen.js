@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useContext } from 'react';
-import { View, StyleSheet, ActivityIndicator, Text, Alert, TouchableOpacity } from 'react-native';
+import { View, StyleSheet, ActivityIndicator, Text, Alert, TouchableOpacity, Share, Linking } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
+import * as Location from 'expo-location';
 import { AuthContext } from '../../context/AuthContext';
 import { rideApi } from '../../utils/api';
 import { colors, spacing, borderRadius, typography } from '../../styles/theme';
@@ -12,6 +13,7 @@ const ProviderTrackScreen = ({ route, navigation }) => {
   const [providerPos, setProviderPos] = useState(null);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [userLocation, setUserLocation] = useState(null);
 
   const fetchProviderLocation = async () => {
     if (!rideId || !userToken) return;
@@ -49,7 +51,20 @@ const ProviderTrackScreen = ({ route, navigation }) => {
       }, 10000); // Poll every 10 seconds
     };
 
+    const getUserLocation = async () => {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === 'granted') {
+          const location = await Location.getCurrentPositionAsync({});
+          setUserLocation(location.coords);
+        }
+      } catch (error) {
+        console.log('Error getting user location:', error);
+      }
+    };
+
     startPolling();
+    getUserLocation();
 
     return () => {
       mounted = false;
@@ -62,6 +77,55 @@ const ProviderTrackScreen = ({ route, navigation }) => {
   const handleRefresh = () => {
     setLoading(true);
     fetchProviderLocation();
+  };
+
+  const shareLiveLocation = async () => {
+    try {
+      if (!userLocation) {
+        Alert.alert('Location Not Available', 'Unable to get your current location. Please check location permissions.');
+        return;
+      }
+
+      const { latitude, longitude } = userLocation;
+      const timestamp = new Date().toLocaleString();
+      
+      // Create shareable content
+      const shareMessage = `🚗 I'm currently tracking my ride!\n\n📍 My Location: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}\n⏰ Time: ${timestamp}\n\n#RideShare #LiveLocation`;
+      
+      // Create Google Maps link
+      const mapsUrl = `https://www.google.com/maps?q=${latitude},${longitude}`;
+      
+      // Share options
+      const shareOptions = {
+        message: `${shareMessage}\n\n🗺️ View on Maps: ${mapsUrl}`,
+        url: mapsUrl,
+        title: 'My Live Location'
+      };
+
+      const result = await Share.share(shareOptions);
+      
+      if (result.action === Share.sharedAction) {
+        console.log('Location shared successfully');
+      }
+    } catch (error) {
+      console.log('Error sharing location:', error);
+      Alert.alert('Share Failed', 'Unable to share location. Please try again.');
+    }
+  };
+
+  const openInMaps = () => {
+    if (!userLocation) {
+      Alert.alert('Location Not Available', 'Unable to get your current location.');
+      return;
+    }
+
+    const { latitude, longitude } = userLocation;
+    const mapsUrl = `https://www.google.com/maps?q=${latitude},${longitude}`;
+    
+    Linking.openURL(mapsUrl).catch(err => {
+      console.log('Error opening maps:', err);
+      Alert.alert('Error', 'Unable to open maps application.');
+    });
   };
 
   if (loading && !providerPos) {
@@ -108,6 +172,16 @@ const ProviderTrackScreen = ({ route, navigation }) => {
         <Text style={styles.headerTitle}>Provider Location</Text>
         <TouchableOpacity style={styles.refreshButton} onPress={handleRefresh}>
           <Text style={styles.refreshButtonText}>Refresh</Text>
+        </TouchableOpacity>
+      </View>
+      
+      {/* Share Location Buttons */}
+      <View style={styles.shareSection}>
+        <TouchableOpacity style={styles.shareButton} onPress={shareLiveLocation}>
+          <Text style={styles.shareButtonText}>📤 Share My Location</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.mapsButton} onPress={openInMaps}>
+          <Text style={styles.mapsButtonText}>🗺️ Open in Maps</Text>
         </TouchableOpacity>
       </View>
       
@@ -219,6 +293,43 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: spacing.lg,
     lineHeight: 20,
+  },
+  shareSection: {
+    flexDirection: 'row',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.cardBackground,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    justifyContent: 'space-around',
+  },
+  shareButton: {
+    backgroundColor: colors.primary,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.md,
+    flex: 1,
+    marginRight: spacing.sm,
+    alignItems: 'center',
+  },
+  shareButtonText: {
+    ...typography.body,
+    color: colors.cardBackground,
+    fontWeight: '600',
+  },
+  mapsButton: {
+    backgroundColor: colors.accent,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.md,
+    flex: 1,
+    marginLeft: spacing.sm,
+    alignItems: 'center',
+  },
+  mapsButtonText: {
+    ...typography.body,
+    color: colors.cardBackground,
+    fontWeight: '600',
   },
 });
 

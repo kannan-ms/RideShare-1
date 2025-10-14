@@ -55,7 +55,16 @@ const RideSchema = new mongoose.Schema({
             type: String,
             enum: ['pending', 'accepted', 'rejected', 'in-ride', 'completed', 'canceled'],
             default: 'pending'
-        }
+        },
+        speedReadings: [{ 
+            timestamp: { type: Date, default: Date.now },
+            speed: { type: Number }, // km/h
+            latitude: { type: Number },
+            longitude: { type: Number }
+        }],
+        averageSpeed: { type: Number, default: 0 }, // km/h
+        rideStartTime: { type: Date },
+        rideEndTime: { type: Date }
     }],
     notifications: [{
         message: { type: String, required: true },

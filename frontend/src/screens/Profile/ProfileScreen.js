@@ -1,6 +1,6 @@
 // src/screens/Profile/ProfileScreen.js
 import React, { useContext, useEffect, useState } from 'react';
-import { SafeAreaView, StyleSheet, View, Text, ScrollView, ActivityIndicator, TouchableOpacity, Image, Alert } from 'react-native';
+import { SafeAreaView, StyleSheet, View, Text, ScrollView, ActivityIndicator, TouchableOpacity, Image, Alert, TextInput, Modal } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
@@ -23,6 +23,9 @@ const ProfileScreen = ({ navigation }) => {
   const [livePhoto, setLivePhoto] = useState(null);
   const [cameraPermission, setCameraPermission] = useState(null);
   const [updating, setUpdating] = useState(false);
+  const [sosModalVisible, setSosModalVisible] = useState(false);
+  const [sosName, setSosName] = useState('');
+  const [sosMobile, setSosMobile] = useState('');
 
   const load = async () => {
     if (!userToken) return;
@@ -30,6 +33,11 @@ const ProfileScreen = ({ navigation }) => {
     try {
       const u = await authApi.getProfile(userToken);
       setUser(u);
+      // Set SOS contact fields if available
+      if (u.sosContact) {
+        setSosName(u.sosContact.name || '');
+        setSosMobile(u.sosContact.mobileNumber || '');
+      }
       if (userRole === 'provider') {
         try { 
           const d = await providerApi.getDetails(userToken);
@@ -147,6 +155,25 @@ const ProfileScreen = ({ navigation }) => {
     }
   };
 
+  const updateSosContact = async () => {
+    if (!sosName.trim() || !sosMobile.trim()) {
+      Alert.alert('Error', 'Please enter both name and mobile number');
+      return;
+    }
+    setUpdating(true);
+    try {
+      await authApi.updateSosContact(sosName.trim(), sosMobile.trim(), userToken);
+      setSosModalVisible(false);
+      Alert.alert('Success', 'SOS contact updated successfully!');
+      // Reload user data to get updated SOS contact
+      await load();
+    } catch (e) {
+      Alert.alert('Error', e?.message || 'Failed to update SOS contact');
+    } finally {
+      setUpdating(false);
+    }
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -206,6 +233,20 @@ const ProfileScreen = ({ navigation }) => {
         </View>
 
         <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Text style={styles.title}>SOS</Text>
+            <TouchableOpacity 
+              style={styles.editButton} 
+              onPress={() => setSosModalVisible(true)}
+            >
+              <Text style={styles.editButtonText}>Edit</Text>
+            </TouchableOpacity>
+          </View>
+          <Row label="Emergency Contact" value={user?.sosContact?.name || 'Not set'} />
+          <Row label="Emergency Mobile" value={user?.sosContact?.mobileNumber || 'Not set'} />
+        </View>
+
+        <View style={styles.card}>
           <Text style={styles.title}>{userRole === 'provider' ? 'Provider Details' : 'Rider Details'}</Text>
           {userRole === 'provider' ? (
             <>
@@ -237,6 +278,59 @@ const ProfileScreen = ({ navigation }) => {
           <Text style={styles.buttonText}>Logout</Text>
         </TouchableOpacity>
       </ScrollView>
+
+      {/* SOS Contact Modal */}
+      <Modal
+        visible={sosModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setSosModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <Text style={styles.modalTitle}>Update SOS Contact</Text>
+            <Text style={styles.modalSubtitle}>Enter your emergency contact details</Text>
+            
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Contact Name"
+              value={sosName}
+              onChangeText={setSosName}
+              placeholderTextColor={colors.textSecondary}
+            />
+            
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Mobile Number"
+              value={sosMobile}
+              onChangeText={setSosMobile}
+              keyboardType="phone-pad"
+              placeholderTextColor={colors.textSecondary}
+            />
+            
+            <View style={styles.modalButtons}>
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.cancelButton]} 
+                onPress={() => setSosModalVisible(false)}
+              >
+                <Text style={styles.cancelButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={[styles.modalButton, styles.saveButton]} 
+                onPress={updateSosContact}
+                disabled={updating}
+              >
+                {updating ? (
+                  <ActivityIndicator color={colors.cardBackground} />
+                ) : (
+                  <Text style={styles.saveButtonText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -265,6 +359,20 @@ const styles = StyleSheet.create({
   primary: { backgroundColor: colors.primary },
   accent: { backgroundColor: colors.accent },
   logout: { backgroundColor: colors.danger },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md },
+  editButton: { backgroundColor: colors.primary, paddingVertical: spacing.xs, paddingHorizontal: spacing.sm, borderRadius: borderRadius.sm },
+  editButtonText: { ...typography.body, color: colors.cardBackground, fontWeight: '600' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  modalContainer: { width: '90%', backgroundColor: colors.cardBackground, padding: spacing.lg, borderRadius: borderRadius.lg },
+  modalTitle: { ...typography.h2, color: colors.textPrimary, marginBottom: spacing.sm, textAlign: 'center' },
+  modalSubtitle: { ...typography.body, color: colors.textSecondary, marginBottom: spacing.lg, textAlign: 'center' },
+  modalInput: { borderWidth: 1, borderColor: colors.border, borderRadius: borderRadius.md, padding: spacing.md, marginBottom: spacing.md, ...typography.body, color: colors.textPrimary, backgroundColor: colors.background },
+  modalButtons: { flexDirection: 'row', justifyContent: 'space-between' },
+  modalButton: { flex: 1, paddingVertical: spacing.md, borderRadius: borderRadius.md, alignItems: 'center', marginHorizontal: spacing.xs },
+  cancelButton: { backgroundColor: colors.border },
+  saveButton: { backgroundColor: colors.primary },
+  cancelButtonText: { ...typography.body, color: colors.textPrimary, fontWeight: '600' },
+  saveButtonText: { ...typography.body, color: colors.cardBackground, fontWeight: '600' },
 });
 
 export default ProfileScreen;

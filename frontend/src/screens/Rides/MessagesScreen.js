@@ -3,6 +3,8 @@
 
 import React, { useContext, useEffect, useState } from 'react';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import * as Location from 'expo-location';
+import { Share, Linking, Alert } from 'react-native';
 // NOTE: Some native modules can cause the app to crash at load time if the
 // installed native version doesn't match the Expo Go client. To avoid that
 // bringing down the whole app during development, we require `expo-clipboard`
@@ -27,8 +29,7 @@ const getClipboard = () => {
 };
 import { SafeAreaView, StyleSheet, View, Text, FlatList, TouchableOpacity, RefreshControl, TextInput, Modal, ScrollView } from 'react-native';
 import { AuthContext } from '../../context/AuthContext';
-import { requestsApi } from '../../utils/api';
-import { otpApi } from '../../utils/api';
+import { requestsApi, otpApi, authApi } from '../../utils/api';
 import { colors, spacing, borderRadius, typography, shadow } from '../../styles/theme';
 
 const StatusBadge = ({ status }) => {
@@ -62,10 +63,15 @@ const MessagesScreen = () => {
         setRawResponse(res);
         setRequests(res.requests || []);
       } else if (userRole === 'rider') {
+        console.log('Loading rider requests and notifications...');
         const [reqRes, notiRes] = await Promise.all([
           requestsApi.getRiderRequests(userToken),
           requestsApi.getRiderNotifications(userToken),
         ]);
+        
+        console.log('Rider requests response:', reqRes);
+        console.log('Rider notifications response:', notiRes);
+        
         const requestsArr = reqRes.requests || [];
         const notificationsArr = (notiRes.notifications || []).map(n => ({
           isNotification: true,
@@ -73,8 +79,20 @@ const MessagesScreen = () => {
           message: n.message,
           createdAt: n.createdAt,
         }));
-        // Merge notifications at top
-        setRequests([...notificationsArr, ...requestsArr]);
+        
+        console.log('Processed notifications:', notificationsArr);
+        console.log('Processed requests:', requestsArr);
+        
+        // Merge notifications at top and sort by latest
+        const allItems = [...notificationsArr, ...requestsArr];
+        // Sort by creation date (newest first)
+        const sortedItems = allItems.sort((a, b) => {
+          const dateA = new Date(a.createdAt || 0);
+          const dateB = new Date(b.createdAt || 0);
+          return dateB - dateA; // Newest first
+        });
+        console.log('Final sorted items:', sortedItems);
+        setRequests(sortedItems);
       }
     } catch (e) {
       console.log('Requests load error:', e?.message || e);
@@ -123,14 +141,25 @@ const MessagesScreen = () => {
   const handleAction = async (item, action) => {
     try {
       if (userRole !== 'provider') return;
+      console.log('Handling action:', action, 'for ride:', item.rideId, 'rider:', item.rider?.id);
+      
       if (action === 'accept') {
-        await requestsApi.acceptRequest(item.rideId, item.rider?.id, userToken);
+        console.log('Accepting request...');
+        const result = await requestsApi.acceptRequest(item.rideId, item.rider?.id, userToken);
+        console.log('Accept request result:', result);
+        Alert.alert('Success', 'Request accepted! OTP has been sent to the rider.');
       } else if (action === 'reject') {
-        await requestsApi.rejectRequest(item.rideId, item.rider?.id, userToken);
+        console.log('Rejecting request...');
+        const result = await requestsApi.rejectRequest(item.rideId, item.rider?.id, userToken);
+        console.log('Reject request result:', result);
+        Alert.alert('Success', 'Request rejected.');
       }
+      
+      console.log('Reloading requests...');
       await loadRequests();
     } catch (e) {
       console.log('Request action error:', e?.message || e);
+      Alert.alert('Error', e?.message || 'Failed to process request. Please try again.');
     }
   };
 
@@ -141,6 +170,127 @@ const MessagesScreen = () => {
   const [otpInput, setOtpInput] = useState('');
   const [passengerOtpModalVisible, setPassengerOtpModalVisible] = useState(false);
   const [passengerOtpText, setPassengerOtpText] = useState('');
+
+  const shareRiderLocation = async (rideId) => {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Location permission is required to share your location.');
+        return;
+      }
+
+      const location = await Location.getCurrentPositionAsync({});
+      const { latitude, longitude } = location.coords;
+      const timestamp = new Date().toLocaleString();
+      
+      const shareMessage = `🚗 I'm currently in a ride!\n\n📍 My Location: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}\n⏰ Time: ${timestamp}\n\n#RideShare #InRide`;
+      const mapsUrl = `https://www.google.com/maps?q=${latitude},${longitude}`;
+      
+      const shareOptions = {
+        message: `${shareMessage}\n\n🗺️ View on Maps: ${mapsUrl}`,
+        url: mapsUrl,
+        title: 'My Ride Location'
+      };
+
+      await Share.share(shareOptions);
+    } catch (error) {
+      console.log('Error sharing location:', error);
+      Alert.alert('Error', 'Failed to share location. Please try again.');
+    }
+  };
+
+  const startRide = async (rideId, otp) => {
+    try {
+      Alert.alert(
+        'Start Ride',
+        'This will verify your OTP and start the ride. You will then have access to SOS and location sharing features.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { 
+            text: 'Start Ride', 
+            onPress: async () => {
+              try {
+                // Get user profile to get user ID
+                const userProfile = await authApi.getProfile(userToken);
+                // Verify OTP and start ride
+                await otpApi.verifyOtp(rideId, userProfile.id, otp, userToken);
+                Alert.alert('Success', 'Ride started! You can now use SOS and location sharing features.');
+                // Reload requests to show updated status
+                await loadRequests();
+              } catch (error) {
+                console.log('Error starting ride:', error);
+                Alert.alert('Error', error?.message || 'Failed to start ride. Please try again.');
+              }
+            }
+          }
+        ]
+      );
+    } catch (error) {
+      console.log('Error in startRide:', error);
+      Alert.alert('Error', 'Failed to start ride. Please try again.');
+    }
+  };
+
+  const sendSOS = async (rideId) => {
+    try {
+      // Get user's SOS contact from profile
+      const userProfile = await authApi.getProfile(userToken);
+      if (!userProfile.sosContact?.mobileNumber) {
+        Alert.alert('SOS Contact Not Set', 'Please set your emergency contact in Profile > SOS section first.');
+        return;
+      }
+
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Location permission is required for SOS.');
+        return;
+      }
+
+      const location = await Location.getCurrentPositionAsync({});
+      const { latitude, longitude } = location.coords;
+      const timestamp = new Date().toLocaleString();
+      
+      // Get ride details for provider info
+      const rideDetails = await requestsApi.getRideDetails(rideId, userToken);
+      
+      // Create live tracking link for emergency contact
+      const liveTrackingUrl = `https://www.google.com/maps?q=${latitude},${longitude}&z=15&t=m&hl=en&gl=US&mapclient=embed&cid=${Date.now()}`;
+      const quickMapsUrl = `https://maps.google.com/?q=${latitude},${longitude}`;
+      
+      const sosMessage = `🚨 SOS ALERT 🚨\n\nI'm in an emergency during my ride!\n\n📍 My Current Location: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}\n⏰ Time: ${timestamp}\n\n🚗 Ride Details:\nFrom: ${rideDetails.startPoint}\nTo: ${rideDetails.destination}\nProvider: ${rideDetails.provider?.name}\nProvider Mobile: ${rideDetails.provider?.mobileNumber}\n\n🗺️ TRACK ME LIVE:\n${liveTrackingUrl}\n\n📱 Quick Maps Link:\n${quickMapsUrl}\n\nPlease help me immediately and track my location!`;
+      
+      const smsUrl = `sms:${userProfile.sosContact.mobileNumber}?body=${encodeURIComponent(sosMessage)}`;
+      
+      Alert.alert(
+        'Send SOS Alert',
+        `This will send your live location and ride details to ${userProfile.sosContact.name} (${userProfile.sosContact.mobileNumber}). They will receive tracking links to monitor your location in real-time.\n\nContinue?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { 
+            text: 'Send SOS', 
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await Linking.openURL(smsUrl);
+                Alert.alert('SOS Sent', `Emergency alert with live tracking links has been sent to ${userProfile.sosContact.name}. They can now track your location in real-time.`);
+              } catch (error) {
+                // Fallback: share via other apps with live tracking links
+                await Share.share({
+                  message: `${sosMessage}`,
+                  url: liveTrackingUrl,
+                  title: 'SOS Alert - Live Tracking'
+                });
+                Alert.alert('SOS Shared', 'Emergency alert with live tracking links has been shared via other apps.');
+              }
+            }
+          }
+        ]
+      );
+    } catch (error) {
+      console.log('Error sending SOS:', error);
+      Alert.alert('Error', 'Failed to send SOS alert. Please try again.');
+    }
+  };
 
   const sendNotify = async (rideId) => {
     const message = notifyTextByRide[rideId];
@@ -196,19 +346,6 @@ const MessagesScreen = () => {
           </View>
           <Text style={styles.subtitle}>{new Date(item.createdAt).toLocaleString()}</Text>
           <Text style={styles.body}>{item.message}</Text>
-          {userRole === 'rider' && /Your boarding OTP is:\s*(\d{4})/.test(item.message) ? (
-            <View style={{ marginTop: spacing.sm, alignItems: 'flex-end' }}>
-              <TouchableOpacity style={[styles.btn, styles.otp]} onPress={() => {
-                const m = item.message.match(/Your boarding OTP is:\s*(\d{4})/);
-                if (m) {
-                  setPassengerOtpText(m[1]);
-                  setPassengerOtpModalVisible(true);
-                }
-              }}>
-                <Text style={styles.btnText}>Show OTP</Text>
-              </TouchableOpacity>
-            </View>
-          ) : null}
           {userRole === 'rider' && item.rideId ? (
             <View style={{ marginTop: spacing.sm, alignItems: 'flex-end' }}>
               <TouchableOpacity style={[styles.btn, styles.verify]} onPress={() => {
@@ -290,7 +427,24 @@ const MessagesScreen = () => {
         ) : (
           <>
             <Text style={styles.body}>Status updates will appear here.</Text>
-            {item.status === 'accepted' && item.rideId ? (
+            {item.status === 'accepted' && item.otp ? (
+              <View style={styles.otpDisplay}>
+                <Text style={styles.otpLabel}>Your Boarding OTP:</Text>
+                <Text style={styles.otpCode}>{item.otp}</Text>
+                <View style={styles.otpButtons}>
+                  <TouchableOpacity style={[styles.btn, styles.otp]} onPress={() => {
+                    setPassengerOtpText(item.otp);
+                    setPassengerOtpModalVisible(true);
+                  }}>
+                    <Text style={styles.btnText}>Copy OTP</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.btn, styles.startRideButton]} onPress={() => startRide(item.rideId, item.otp)}>
+                    <Text style={styles.btnText}>Start Ride</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : null}
+            {(item.status === 'accepted' || item.status === 'in-ride') && item.rideId ? (
               <View style={{ marginTop: spacing.sm, alignItems: 'flex-end' }}>
                 <TouchableOpacity style={[styles.btn, styles.verify]} onPress={() => {
                   try {
@@ -301,6 +455,22 @@ const MessagesScreen = () => {
                 }}>
                   <Text style={styles.btnText}>Track Provider</Text>
                 </TouchableOpacity>
+              </View>
+            ) : null}
+            {item.status === 'in-ride' && item.rideId ? (
+              <View style={{ marginTop: spacing.sm, alignItems: 'flex-end' }}>
+                <TouchableOpacity style={[styles.btn, styles.shareButton]} onPress={() => shareRiderLocation(item.rideId)}>
+                  <Text style={styles.btnText}>Share My Location</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.btn, styles.sosButton]} onPress={() => sendSOS(item.rideId)}>
+                  <Text style={styles.btnText}>🚨 SOS</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+            {item.status === 'completed' && item.averageSpeed ? (
+              <View style={styles.speedDisplay}>
+                <Text style={styles.speedLabel}>Average Speed:</Text>
+                <Text style={styles.speedValue}>{item.averageSpeed} km/h</Text>
               </View>
             ) : null}
           </>
@@ -463,6 +633,9 @@ const styles = StyleSheet.create({
   btnText: { ...typography.h4, color: colors.cardBackground, fontWeight: 'bold' },
   otp: { backgroundColor: '#4CAF50' },
   verify: { backgroundColor: '#2196F3' },
+  shareButton: { backgroundColor: '#FF9800' },
+  sosButton: { backgroundColor: '#f44336' },
+  startRideButton: { backgroundColor: '#9C27B0' },
   disabledBtn: { opacity: 0.5 },
   notifyBox: { marginTop: spacing.md },
   notifyLabel: { ...typography.body, color: colors.textSecondary, marginBottom: spacing.xs },
@@ -484,6 +657,49 @@ const styles = StyleSheet.create({
   emptySubtext: { ...typography.body, color: colors.textSecondary, marginTop: spacing.xs, textAlign: 'center' },
   badge: { paddingVertical: 4, paddingHorizontal: 8, borderRadius: 999 },
   badgeText: { ...typography.body, color: colors.cardBackground, fontWeight: '700' },
+  otpDisplay: {
+    backgroundColor: colors.primaryLight,
+    padding: spacing.md,
+    borderRadius: borderRadius.md,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  otpButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+    marginTop: spacing.sm
+  },
+  otpLabel: {
+    ...typography.body,
+    color: colors.textSecondary,
+    marginBottom: spacing.xs,
+  },
+  otpCode: {
+    ...typography.h1,
+    color: colors.primary,
+    fontWeight: 'bold',
+    marginBottom: spacing.sm,
+    letterSpacing: 2,
+  },
+  speedDisplay: {
+    marginTop: spacing.sm,
+    padding: spacing.sm,
+    backgroundColor: colors.background,
+    borderRadius: borderRadius.md,
+    alignItems: 'center'
+  },
+  speedLabel: {
+    ...typography.body,
+    color: colors.textSecondary,
+    marginBottom: spacing.xs
+  },
+  speedValue: {
+    ...typography.h3,
+    color: colors.primary,
+    fontWeight: 'bold'
+  },
 });
 
 const modalStyles = StyleSheet.create({

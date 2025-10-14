@@ -44,6 +44,10 @@ const UserSchema = new mongoose.Schema({
     age: { type: Number, required: true },
     mobileNumber: { type: String, required: true, unique: true },
     role: { type: String, enum: ['rider', 'provider'], default: 'rider' },
+    sosContact: {
+        name: { type: String, default: '' },
+        mobileNumber: { type: String, default: '' }
+    },
     createdAt: { type: Date, default: Date.now }
 });
 
@@ -237,6 +241,26 @@ app.put('/api/auth/role', auth, async (req, res) => {
     }
 });
 
+// 6. Update SOS Contact
+app.put('/api/auth/sos-contact', auth, async (req, res) => {
+    const { name, mobileNumber } = req.body;
+    if (!name || !mobileNumber) {
+        return res.status(400).json({ message: 'Name and mobile number are required.' });
+    }
+    try {
+        let user = await User.findById(req.user.id);
+        if (!user) {
+            return res.status(404).json({ message: 'User not found.' });
+        }
+        user.sosContact = { name, mobileNumber };
+        await user.save();
+        res.json({ message: 'SOS contact updated successfully', sosContact: user.sosContact });
+    } catch (err) {
+        console.error('Update SOS contact error:', err.message);
+        res.status(500).json({ message: 'Server error updating SOS contact.' });
+    }
+});
+
 // --- Provider Details Routes ---
 
 app.post('/api/provider/details', auth, async (req, res) => {
@@ -352,11 +376,19 @@ app.delete('/api/provider/rides/:rideId', auth, async (req, res) => {
         const recipients = ride.riders
             .filter(r => ['pending', 'accepted'].includes(r.status))
             .map(r => r.user);
-        const message = 'This ride was canceled by the provider.';
+        
+        // Send notification to all affected riders
+        const message = 'This ride has been canceled by the provider. You will no longer be able to track the provider\'s location.';
         ride.notifications.push({ message, toRiderIds: recipients });
+        
+        // Disable live tracking and clear location data
+        ride.liveTrackingEnabled = false;
+        ride.liveLocation = null;
         ride.status = 'canceled';
+        
         await ride.save();
-        return res.json({ message: 'Ride canceled and riders notified.' });
+        console.log(`Ride ${req.params.rideId} canceled, ${recipients.length} riders notified, tracking disabled`);
+        return res.json({ message: 'Ride canceled and riders notified. Live tracking has been disabled.' });
     } catch (err) {
         console.error('Delete ride error:', err.message);
         return res.status(500).json({ message: 'Server error deleting ride.' });
@@ -531,6 +563,22 @@ app.get('/api/rides/search', auth, async (req, res) => {
     }
 });
 
+// @route   GET /api/rides/:rideId
+// @desc    Get specific ride details
+// @access  Private (Any authenticated user)
+app.get('/api/rides/:rideId', auth, async (req, res) => {
+    try {
+        const ride = await Ride.findById(req.params.rideId).populate('provider', 'name mobileNumber');
+        if (!ride) {
+            return res.status(404).json({ message: 'Ride not found.' });
+        }
+        res.json(ride);
+    } catch (err) {
+        console.error('Get ride details error:', err.message);
+        res.status(500).json({ message: 'Server error fetching ride details.' });
+    }
+});
+
 // @route   GET /api/rides
 // @desc    Get all available rides (All authenticated users can view)
 // @access  Private (Any authenticated user)
@@ -665,17 +713,24 @@ app.post('/api/provider/requests/:rideId/:riderId/accept', auth, async (req, res
         // Persist change first
         await ride.save();
 
-        // Automatically generate OTP for this accepted passenger and send via in-app notification
+        // Automatically generate OTP for this accepted passenger and store in rider entry
         try {
+            console.log('Generating OTP for accepted rider:', riderId, 'on ride:', rideId);
+            
             // remove any previous unverified OTPs
             await RideOtp.deleteMany({ rideId: rideId, passengerId: riderId, isVerified: false });
             const otp = Math.floor(1000 + Math.random() * 9000).toString();
+            console.log('Generated OTP:', otp);
+            
             const otpHash = await bcrypt.hash(otp, 10);
             const rideOtp = new RideOtp({ otpHash, rideId: rideId, passengerId: riderId, providerId: req.user.id });
             await rideOtp.save();
-            const message = `Your boarding OTP is: ${otp}`;
-            ride.notifications.push({ message, toRiderIds: [riderId] });
+            console.log('Saved OTP to database');
+            
+            // Store OTP in the rider entry - this will be included in the rider request data
+            riderEntry.otp = otp;
             await ride.save();
+            console.log('OTP stored in rider entry');
             console.debug(`Generated OTP event for ride ${rideId} passenger ${riderId}`);
         } catch (otpErr) {
             console.error('Error generating OTP on accept:', otpErr?.message || otpErr);
@@ -866,12 +921,29 @@ app.get('/api/rider/notifications', auth, async (req, res) => {
         if (!user || user.role !== 'rider') {
             return res.status(403).json({ message: 'Only riders can view notifications.' });
         }
+        
+        console.log('Fetching notifications for rider:', req.user.id);
+        
+        // Get all rides where this rider is accepted
         const rides = await Ride.find({ 'riders.user': req.user.id, 'riders.status': 'accepted' });
-        const items = rides.flatMap(ride => (ride.notifications || []).filter(n => !n.toRiderIds?.length || n.toRiderIds.some(id => id.toString() === req.user.id.toString())).map(n => ({
-            rideId: ride.id,
-            message: n.message,
-            createdAt: n.createdAt,
-        })));
+        console.log('Found accepted rides for rider:', rides.length);
+        
+        const items = rides.flatMap(ride => {
+            console.log('Processing ride:', ride.id, 'with notifications:', ride.notifications?.length || 0);
+            const rideNotifications = (ride.notifications || []).filter(n => {
+                const isForThisRider = !n.toRiderIds?.length || n.toRiderIds.some(id => id.toString() === req.user.id.toString());
+                console.log('Notification for rider?', isForThisRider, 'message:', n.message);
+                return isForThisRider;
+            }).map(n => ({
+                rideId: ride.id,
+                message: n.message,
+                createdAt: n.createdAt,
+            }));
+            console.log('Filtered notifications for this ride:', rideNotifications.length);
+            return rideNotifications;
+        });
+        
+        console.log('Total notifications for rider:', items.length);
         res.json({ notifications: items.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)) });
     } catch (err) {
         console.error('Rider notifications error:', err.message);
@@ -929,6 +1001,10 @@ app.get('/api/rides/:rideId/provider-location', auth, async (req, res) => {
         if (!ride) return res.status(404).json({ message: 'Ride not found.' });
         const isAccepted = ride.riders.some(r => r.user.toString() === req.user.id && r.status === 'accepted');
         if (!isAccepted) return res.status(403).json({ message: 'You are not accepted for this ride.' });
+        
+        // Check if ride is canceled
+        if (ride.status === 'canceled') return res.status(403).json({ message: 'This ride has been canceled by the provider.' });
+        
         const now = new Date();
         const start = new Date(ride.startTime);
         const diffMs = start.getTime() - now.getTime();
@@ -942,6 +1018,163 @@ app.get('/api/rides/:rideId/provider-location', auth, async (req, res) => {
     } catch (e) {
         console.error('Fetch provider location error:', e?.message || e);
         res.status(500).json({ message: 'Server error fetching provider location.' });
+    }
+});
+
+// OTP Verification endpoint
+app.post('/api/otp/verify', auth, async (req, res) => {
+    try {
+        const { rideId, passengerId, otp } = req.body;
+        if (!rideId || !passengerId || !otp) {
+            return res.status(400).json({ message: 'Ride ID, passenger ID, and OTP are required.' });
+        }
+        
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'rider') return res.status(403).json({ message: 'Only riders can verify OTP.' });
+        
+        // Find the ride and rider entry
+        const ride = await Ride.findById(rideId);
+        if (!ride) return res.status(404).json({ message: 'Ride not found.' });
+        
+        const riderEntry = ride.riders.find(r => r.user.toString() === req.user.id && r.status === 'accepted');
+        if (!riderEntry) return res.status(403).json({ message: 'You are not accepted for this ride.' });
+        
+        // Check if OTP matches (stored in rider entry)
+        if (riderEntry.otp !== otp) {
+            return res.status(400).json({ message: 'Invalid OTP.' });
+        }
+        
+        // Verify OTP in RideOtp collection as well
+        const rideOtp = await RideOtp.findOne({ 
+            rideId, 
+            passengerId, 
+            isVerified: false 
+        });
+        
+        if (!rideOtp) {
+            return res.status(400).json({ message: 'OTP not found or already used.' });
+        }
+        
+        const isOtpValid = await bcrypt.compare(otp, rideOtp.otpHash);
+        if (!isOtpValid) {
+            return res.status(400).json({ message: 'Invalid OTP.' });
+        }
+        
+        // Mark OTP as verified and update rider status to in-ride
+        rideOtp.isVerified = true;
+        await rideOtp.save();
+        
+        riderEntry.status = 'in-ride';
+        riderEntry.rideStartTime = new Date();
+        await ride.save();
+        
+        res.json({ 
+            message: 'OTP verified successfully. Ride started!', 
+            rideStartTime: riderEntry.rideStartTime 
+        });
+    } catch (e) {
+        console.error('OTP verification error:', e?.message || e);
+        res.status(500).json({ message: 'Server error verifying OTP.' });
+    }
+});
+
+// Rider: Start ride (alternative endpoint without OTP verification)
+app.post('/api/rides/:rideId/start', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'rider') return res.status(403).json({ message: 'Only riders can start rides.' });
+        
+        const { rideId } = req.params;
+        const ride = await Ride.findById(rideId);
+        if (!ride) return res.status(404).json({ message: 'Ride not found.' });
+        
+        const riderEntry = ride.riders.find(r => r.user.toString() === req.user.id && r.status === 'accepted');
+        if (!riderEntry) return res.status(403).json({ message: 'You are not accepted for this ride.' });
+        
+        // Update status to in-ride and set start time
+        riderEntry.status = 'in-ride';
+        riderEntry.rideStartTime = new Date();
+        await ride.save();
+        
+        res.json({ message: 'Ride started successfully', rideStartTime: riderEntry.rideStartTime });
+    } catch (e) {
+        console.error('Start ride error:', e?.message || e);
+        res.status(500).json({ message: 'Server error starting ride.' });
+    }
+});
+
+// Rider: Update speed during ride
+app.post('/api/rides/:rideId/speed', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'rider') return res.status(403).json({ message: 'Only riders can update speed.' });
+        
+        const { rideId } = req.params;
+        const { speed, latitude, longitude } = req.body;
+        
+        if (typeof speed !== 'number' || speed < 0) {
+            return res.status(400).json({ message: 'Invalid speed value.' });
+        }
+        
+        const ride = await Ride.findById(rideId);
+        if (!ride) return res.status(404).json({ message: 'Ride not found.' });
+        
+        const riderEntry = ride.riders.find(r => r.user.toString() === req.user.id && r.status === 'in-ride');
+        if (!riderEntry) return res.status(403).json({ message: 'You are not in an active ride.' });
+        
+        // Add speed reading
+        riderEntry.speedReadings.push({
+            timestamp: new Date(),
+            speed,
+            latitude,
+            longitude
+        });
+        
+        await ride.save();
+        res.json({ message: 'Speed updated successfully' });
+    } catch (e) {
+        console.error('Update speed error:', e?.message || e);
+        res.status(500).json({ message: 'Server error updating speed.' });
+    }
+});
+
+// Rider: End ride and calculate average speed
+app.post('/api/rides/:rideId/end', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user || user.role !== 'rider') return res.status(403).json({ message: 'Only riders can end rides.' });
+        
+        const { rideId } = req.params;
+        const ride = await Ride.findById(rideId);
+        if (!ride) return res.status(404).json({ message: 'Ride not found.' });
+        
+        const riderEntry = ride.riders.find(r => r.user.toString() === req.user.id && r.status === 'in-ride');
+        if (!riderEntry) return res.status(403).json({ message: 'You are not in an active ride.' });
+        
+        // Calculate average speed
+        const speedReadings = riderEntry.speedReadings;
+        let averageSpeed = 0;
+        if (speedReadings.length > 0) {
+            const totalSpeed = speedReadings.reduce((sum, reading) => sum + reading.speed, 0);
+            averageSpeed = totalSpeed / speedReadings.length;
+        }
+        
+        // Update rider status and end time
+        riderEntry.status = 'completed';
+        riderEntry.rideEndTime = new Date();
+        riderEntry.averageSpeed = Math.round(averageSpeed * 100) / 100; // Round to 2 decimal places
+        
+        await ride.save();
+        
+        res.json({ 
+            message: 'Ride completed successfully', 
+            averageSpeed: riderEntry.averageSpeed,
+            totalReadings: speedReadings.length,
+            rideDuration: riderEntry.rideEndTime - riderEntry.rideStartTime
+        });
+    } catch (e) {
+        console.error('End ride error:', e?.message || e);
+        res.status(500).json({ message: 'Server error ending ride.' });
     }
 });
 // Rider: list own requests with statuses
@@ -965,6 +1198,10 @@ app.get('/api/rider/requests', auth, async (req, res) => {
                         startTime: ride.startTime,
                         provider: { id: ride.provider.id, name: ride.provider.name, mobileNumber: ride.provider.mobileNumber },
                         status: r.status,
+                        otp: r.otp || null, // Include OTP if available
+                        averageSpeed: r.averageSpeed || null, // Include average speed if available
+                        rideStartTime: r.rideStartTime || null,
+                        rideEndTime: r.rideEndTime || null
                     });
                 }
             });

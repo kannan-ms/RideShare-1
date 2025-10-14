@@ -29,8 +29,8 @@ const CreateRideScreen = ({ navigation }) => {
   const [startPoint, setStartPoint] = useState('');
   const [destination, setDestination] = useState('');
   const [breakLocations, setBreakLocations] = useState('');
-  const [startTime, setStartTime] = useState(new Date());
-  const [endTime, setEndTime] = useState(new Date());
+  const [startTime, setStartTime] = useState(new Date(Date.now() + 45 * 60 * 1000)); // 45 minutes from now
+  const [endTime, setEndTime] = useState(new Date(Date.now() + 105 * 60 * 1000)); // 1 hour 45 minutes from now
   const [rideCost, setRideCost] = useState('');
   const [seats, setSeats] = useState('1');
   const [womenOnly, setWomenOnly] = useState(false);

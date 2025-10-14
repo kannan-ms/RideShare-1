@@ -171,14 +171,14 @@ const RidesScreen = ({ navigation }) => {
       if (action === 'book') {
         // Gate: require rider details
         checkRiderVerifiedThen(() => {
-          Alert.alert(
-            'Book Ride',
-            `Confirm booking for ride from ${ride.startPoint} to ${ride.destination}?\nPrice: ₹${ride.rideCost}\nTime: ${new Date(ride.startTime).toLocaleString()}`,
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Book', onPress: () => bookRide(ride) }
-            ]
-          );
+        Alert.alert(
+          'Book Ride',
+          `Confirm booking for ride from ${ride.startPoint} to ${ride.destination}?\nPrice: ₹${ride.rideCost}\nTime: ${new Date(ride.startTime).toLocaleString()}`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Book', onPress: () => bookRide(ride) }
+          ]
+        );
         });
       }
     } else if (userRole === 'provider') {
@@ -415,12 +415,12 @@ const RidesScreen = ({ navigation }) => {
         <View style={styles.rideActions}>
           {userRole === 'rider' ? (
             <>
-              <TouchableOpacity
-                style={[styles.actionButton, styles.bookButton]}
-                onPress={() => handleRideAction(ride, 'book')}
-              >
-                <Text style={styles.actionButtonText}>Book Ride</Text>
-              </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.actionButton, styles.bookButton]}
+              onPress={() => handleRideAction(ride, 'book')}
+            >
+              <Text style={styles.actionButtonText}>Book Ride</Text>
+            </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.actionButton, styles.manageButton]}
                 onPress={() => viewProviderDetails(ride)}
@@ -439,18 +439,24 @@ const RidesScreen = ({ navigation }) => {
             </>
           ) : (
             <>
+            <TouchableOpacity
+              style={[styles.actionButton, styles.manageButton]}
+              onPress={() => handleRideAction(ride, 'manage')}
+            >
+              <Text style={styles.actionButtonText}>Manage Ride</Text>
+            </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.actionButton, styles.manageButton]}
-                onPress={() => handleRideAction(ride, 'manage')}
-              >
-                <Text style={styles.actionButtonText}>Manage Ride</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.actionButton, liveTrackingRideIds[ride._id || ride.id] ? styles.bookButton : styles.manageButton]}
+                style={[
+                  styles.trackingButton, 
+                  liveTrackingRideIds[ride._id || ride.id] ? styles.trackingButtonActive : styles.trackingButtonInactive
+                ]}
                 onPress={() => toggleLiveTracking(ride)}
               >
-                <Text style={styles.actionButtonText}>
-                  {liveTrackingRideIds[ride._id || ride.id] ? 'Disable Tracking' : 'Enable Tracking'}
+                <Text style={[
+                  styles.trackingButtonText,
+                  liveTrackingRideIds[ride._id || ride.id] ? styles.trackingButtonTextActive : styles.trackingButtonTextInactive
+                ]}>
+                  {liveTrackingRideIds[ride._id || ride.id] ? '🔴 Stop Tracking' : '🟢 Start Tracking'}
                 </Text>
               </TouchableOpacity>
             </>
@@ -462,38 +468,73 @@ const RidesScreen = ({ navigation }) => {
 
   const toggleLiveTracking = async (ride) => {
     const rideId = ride._id || ride.id;
+    const isCurrentlyTracking = liveTrackingRideIds[rideId];
+    
     try {
-      if (liveTrackingRideIds[rideId]) {
-        // disable
+      if (isCurrentlyTracking) {
+        // Disable tracking
+        console.log('Disabling tracking for ride:', rideId);
         clearInterval(liveTrackingRideIds[rideId]);
-        setLiveTrackingRideIds((prev) => ({ ...prev, [rideId]: undefined }));
+        setLiveTrackingRideIds((prev) => {
+          const newState = { ...prev };
+          delete newState[rideId];
+          return newState;
+        });
         await rideApi.setLiveTracking(rideId, false, userToken);
-        return;
-      }
-      // enable
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission required', 'Location permission is required to enable live tracking.');
-        return;
-      }
-      await rideApi.setLiveTracking(rideId, true, userToken);
-      // push immediately once
-      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      if (pos?.coords) {
-        await rideApi.updateLiveLocation(rideId, pos.coords.latitude, pos.coords.longitude, userToken);
-      }
-      // then every 15 seconds
-      const intId = setInterval(async () => {
+        Alert.alert('Tracking Disabled', 'Live location tracking has been stopped.');
+      } else {
+        // Enable tracking
+        console.log('Enabling tracking for ride:', rideId);
+        
+        // Request location permission
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission Required', 'Location permission is required to enable live tracking.');
+          return;
+        }
+        
+        // Enable tracking on backend
+        await rideApi.setLiveTracking(rideId, true, userToken);
+        
+        // Get initial location
         try {
-          const p = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-          if (p?.coords) {
-            await rideApi.updateLiveLocation(rideId, p.coords.latitude, p.coords.longitude, userToken);
+          const pos = await Location.getCurrentPositionAsync({ 
+            accuracy: Location.Accuracy.Balanced,
+            timeout: 10000,
+            maximumAge: 30000
+          });
+          if (pos?.coords) {
+            await rideApi.updateLiveLocation(rideId, pos.coords.latitude, pos.coords.longitude, userToken);
+            console.log('Initial location sent:', pos.coords);
           }
-        } catch (_) {}
-      }, 15000);
-      setLiveTrackingRideIds((prev) => ({ ...prev, [rideId]: intId }));
+        } catch (locationError) {
+          console.log('Error getting initial location:', locationError);
+        }
+        
+        // Set up periodic location updates
+        const intId = setInterval(async () => {
+          try {
+            const p = await Location.getCurrentPositionAsync({ 
+              accuracy: Location.Accuracy.Balanced,
+              timeout: 10000,
+              maximumAge: 30000
+            });
+            if (p?.coords) {
+              await rideApi.updateLiveLocation(rideId, p.coords.latitude, p.coords.longitude, userToken);
+              console.log('Location updated:', p.coords);
+            }
+          } catch (updateError) {
+            console.log('Error updating location:', updateError);
+          }
+        }, 15000);
+        
+        // Update state
+        setLiveTrackingRideIds((prev) => ({ ...prev, [rideId]: intId }));
+        Alert.alert('Tracking Enabled', 'Live location tracking has been started. Your location will be shared with accepted riders.');
+      }
     } catch (e) {
-      Alert.alert('Error', e?.message || 'Failed to toggle live tracking');
+      console.error('Toggle tracking error:', e);
+      Alert.alert('Error', e?.message || 'Failed to toggle live tracking. Please try again.');
     }
   };
 
@@ -588,32 +629,32 @@ const RidesScreen = ({ navigation }) => {
         </TouchableOpacity>
         {showActions && (
           <View style={[styles.profileSection, { marginTop: spacing.sm }] }>
-            <View style={styles.profileButtons}>
-              <TouchableOpacity
-                style={styles.profileButton}
-                onPress={() => {
-                  if (userRole === 'rider') {
-                    navigation.navigate('RiderDetails');
-                  } else {
-                    navigation.navigate('ProviderDetails');
-                  }
-                }}
-              >
-                <Text style={styles.profileButtonText}>
-                  {userRole === 'rider' ? 'Update Rider Details' : 'Update Vehicle Details'}
-                </Text>
-              </TouchableOpacity>
-              {userRole === 'rider' && (
+        <View style={styles.profileButtons}>
+          <TouchableOpacity
+            style={styles.profileButton}
+            onPress={() => {
+              if (userRole === 'rider') {
+                navigation.navigate('RiderDetails');
+              } else {
+                navigation.navigate('ProviderDetails');
+              }
+            }}
+          >
+            <Text style={styles.profileButtonText}>
+              {userRole === 'rider' ? 'Update Rider Details' : 'Update Vehicle Details'}
+            </Text>
+          </TouchableOpacity>
+          {userRole === 'rider' && (
                 <TouchableOpacity style={styles.profileButton} onPress={uploadAadhaarForBooking}>
-                  <Text style={styles.profileButtonText}>Upload Aadhaar for Booking</Text>
-                </TouchableOpacity>
-              )}
-              {userRole === 'provider' && (
+              <Text style={styles.profileButtonText}>Upload Aadhaar for Booking</Text>
+            </TouchableOpacity>
+          )}
+          {userRole === 'provider' && (
                 <TouchableOpacity style={[styles.profileButton, styles.createRideButton]} onPress={handleCreateRide}>
-                  <Text style={styles.profileButtonText}>Create New Ride</Text>
-                </TouchableOpacity>
-              )}
-            </View>
+              <Text style={styles.profileButtonText}>Create New Ride</Text>
+            </TouchableOpacity>
+          )}
+        </View>
           </View>
         )}
       </View>
@@ -728,6 +769,34 @@ const styles = StyleSheet.create({
   },
   trackButton: {
     backgroundColor: '#4CAF50', // Green color for tracking
+  },
+  trackingButton: {
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.lg,
+    minWidth: 140,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    ...shadow.button,
+  },
+  trackingButtonActive: {
+    backgroundColor: '#ff4444',
+    borderColor: '#cc0000',
+  },
+  trackingButtonInactive: {
+    backgroundColor: '#4CAF50',
+    borderColor: '#2E7D32',
+  },
+  trackingButtonText: {
+    ...typography.h4,
+    fontWeight: 'bold',
+  },
+  trackingButtonTextActive: {
+    color: '#ffffff',
+  },
+  trackingButtonTextInactive: {
+    color: '#ffffff',
   },
   actionButtonText: {
     color: colors.cardBackground,

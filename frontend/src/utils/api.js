@@ -99,6 +99,7 @@ export const authApi = {
   login: (credentials) => apiCall('/auth/login', 'POST', credentials),
   getProfile: (token) => apiCall('/auth/me', 'GET', null, token),
   updateRole: (role, token) => apiCall('/auth/role', 'PUT', { role }, token),
+  updateSosContact: (name, mobileNumber, token) => apiCall('/auth/sos-contact', 'PUT', { name, mobileNumber }, token),
 };
 
 // MODIFIED: Ensure these are correctly exported
@@ -142,6 +143,10 @@ export const requestsApi = {
   getRiderRequests: (token) => apiCall('/rider/requests', 'GET', null, token),
   notifyAccepted: (rideId, message, token, toAllAccepted = true) => apiCall(`/provider/notify/${rideId}`, 'POST', { message, toAllAccepted }, token),
   getRiderNotifications: (token) => apiCall('/rider/notifications', 'GET', null, token),
+  getRideDetails: (rideId, token) => apiCall(`/rides/${rideId}`, 'GET', null, token),
+  startRide: (rideId, token) => apiCall(`/rides/${rideId}/start`, 'POST', null, token),
+  updateSpeed: (rideId, speed, latitude, longitude, token) => apiCall(`/rides/${rideId}/speed`, 'POST', { speed, latitude, longitude }, token),
+  endRide: (rideId, token) => apiCall(`/rides/${rideId}/end`, 'POST', null, token),
 };
 
 // OTP APIs
