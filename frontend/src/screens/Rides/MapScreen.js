@@ -17,16 +17,26 @@ const MapScreen = ({ onSelectLocation, mode, onCancel }) => {
   const [startAddress, setStartAddress] = useState('');
   const [endAddress, setEndAddress] = useState('');
   const [hasPermission, setHasPermission] = useState(false);
+  const [permissionError, setPermissionError] = useState(false);
   const [mapRegion, setMapRegion] = useState(INITIAL_REGION); // Add state for map region
   const [hint, setHint] = useState('');
 
   useEffect(() => {
     const requestPermissions = async () => {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status === 'granted') {
-        setHasPermission(true);
-      } else {
-        console.error('Location permission not granted');
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === 'granted') {
+          setHasPermission(true);
+          setPermissionError(false);
+        } else {
+          console.error('Location permission not granted:', status);
+          setHasPermission(false);
+          setPermissionError(true);
+        }
+      } catch (error) {
+        console.error('Error requesting location permission:', error);
+        setHasPermission(false);
+        setPermissionError(true);
       }
     };
 
@@ -118,6 +128,19 @@ const MapScreen = ({ onSelectLocation, mode, onCancel }) => {
     }
   };
 
+  // Show error state if permissions are denied
+  if (permissionError) {
+    return (
+      <View style={[styles.container, styles.errorContainer]}>
+        <Text style={styles.errorText}>Location permission is required to use the map.</Text>
+        <Text style={styles.errorSubtext}>Please enable location access in your device settings.</Text>
+        <TouchableOpacity style={styles.cancelButton} onPress={onCancel}>
+          <Text style={styles.cancelButtonText}>Go Back</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <MapView
@@ -125,6 +148,10 @@ const MapScreen = ({ onSelectLocation, mode, onCancel }) => {
         region={mapRegion} // Use region instead of initialRegion
         onRegionChangeComplete={(region) => setMapRegion(region)} // Update region state on map movement
         onLongPress={handleLongPress}
+        onMapReady={() => console.log('Map is ready')}
+        onError={(error) => {
+          console.error('Map error:', error);
+        }}
       >
         {startLocation && (
           <Marker
@@ -196,6 +223,24 @@ const styles = StyleSheet.create({
     color: 'white',
     fontWeight: 'bold',
     textAlign: 'center',
+  },
+  errorContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  errorText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    marginBottom: 10,
+    color: 'red',
+  },
+  errorSubtext: {
+    fontSize: 14,
+    textAlign: 'center',
+    marginBottom: 20,
+    color: 'gray',
   },
 });
 
