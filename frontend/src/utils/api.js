@@ -147,6 +147,14 @@ export const requestsApi = {
   startRide: (rideId, token) => apiCall(`/rides/${rideId}/start`, 'POST', null, token),
   updateSpeed: (rideId, speed, latitude, longitude, token) => apiCall(`/rides/${rideId}/speed`, 'POST', { speed, latitude, longitude }, token),
   endRide: (rideId, token) => apiCall(`/rides/${rideId}/end`, 'POST', null, token),
+  replyToProvider: (rideId, message, token) => apiCall(`/rider/reply/${rideId}`, 'POST', { message }, token),
+  deleteMessage: (rideId, messageId, token) => apiCall(`/messages/${rideId}/${messageId}`, 'DELETE', null, token),
+  deleteMessages: (rideId, messageIds, token) => apiCall(`/messages/${rideId}`, 'DELETE', { messageIds }, token),
+  providerEndRide: (rideId, token) => apiCall(`/provider/end-ride/${rideId}`, 'POST', null, token),
+  confirmRideEnd: (rideId, token) => apiCall(`/rider/confirm-ride-end/${rideId}`, 'POST', null, token),
+  rejectRideEnd: (rideId, token) => apiCall(`/rider/reject-ride-end/${rideId}`, 'POST', null, token),
+  reportRide: (rideId, reportText, token) => apiCall(`/rider/report/${rideId}`, 'POST', { reportText }, token),
+  rateRide: (rideId, rating, token) => apiCall(`/rider/rate/${rideId}`, 'POST', { rating }, token),
 };
 
 // OTP APIs
