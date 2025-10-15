@@ -425,7 +425,7 @@ const RidesScreen = ({ navigation }) => {
                 style={[styles.actionButton, styles.manageButton]}
                 onPress={() => viewProviderDetails(ride)}
               >
-                <Text style={styles.actionButtonText}>View Provider Details</Text>
+                <Text style={styles.actionButtonText} numberOfLines={2}>View Provider Details</Text>
               </TouchableOpacity>
               {/* Track button for accepted rides - will be shown when rider has accepted booking */}
               {ride.userBookingStatus === 'accepted' && (
@@ -751,14 +751,24 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   rideActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
     alignItems: 'center',
+    flexWrap: 'wrap',
+    marginTop: spacing.md,
+    paddingHorizontal: spacing.sm,
   },
   actionButton: {
     paddingVertical: spacing.md,
     paddingHorizontal: spacing.lg,
     borderRadius: borderRadius.md,
-    minWidth: 120,
+    minWidth: 140,
+    maxWidth: 160,
+    flex: 1,
+    marginHorizontal: spacing.xs,
+    marginVertical: spacing.xs,
     alignItems: 'center',
+    justifyContent: 'center',
     ...shadow.button,
   },
   bookButton: {
@@ -800,8 +810,10 @@ const styles = StyleSheet.create({
   },
   actionButtonText: {
     color: colors.cardBackground,
-    ...typography.h3,
+    ...typography.h4,
     fontWeight: 'bold',
+    textAlign: 'center',
+    lineHeight: 18,
   },
   loadingContainer: {
     flex: 1,
